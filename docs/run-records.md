@@ -30,7 +30,7 @@ View latency is up to ~1 hour; history covers 365 days.
 
 | Date | Activity | Objects Created | Session/Thread ID |
 |---|---|---|---|
-| 2026-08-29 | Planning session (`prompts/planning_session.md`) | `docs/adr/ADR-001..005.md`, `docs/risk-register.md`, `docs/acceptance-tests.md` | current session |
+| 2026-08-29 | Planning session (`prompts/planning_session.md`, 21m) | `docs/adr/ADR-001..005.md`, `docs/risk-register.md`, `docs/acceptance-tests.md` | `731c0df1-28de-4cdd-a68c-1c7d7c5c6d63` |
 
 ### Planning Decisions Log (2026-08-29)
 
@@ -45,5 +45,15 @@ View latency is up to ~1 hour; history covers 365 days.
 | D7 | Mission 06 attempt-and-fallback for Streamlit runtime, no pre-probe | No file change (confirms ADR-005) |
 | D8 | Skip XGBoost in main pass — anomaly detection + forecast + z-score fallback only | `prompts/03_ml.md` |
 
-| | Missions 00–06 (see `docs/runs/`) | | |
-| | Scheduled triage / digest runs | | |
+### Mission 00 — Foundation (2026-08-29)
+
+**Objects created:** DB `AEGIS_OEE`; schemas RAW, CORE, FEATURES, ML, SEMANTIC, ACTION, APP, TEST; warehouses AEGIS_WH, AEGIS_APP_WH; stages DOC_STAGE (w/ directory), APP_STAGE, SKILL_STAGE; table TEST.ENV_PROBES; file `sql/00_setup.sql`.
+
+| Probe | Result | Detail |
+|---|---|---|
+| anomaly_detection_available | PASS | model created and dropped successfully |
+| coco_usage_view | PASS | 83 rows |
+| cortex_complete | PASS | Hello (llama3.1-8b) |
+| email_or_webhook_integration | PASS | No notification integrations found |
+| execute_agent_task_grant | PASS | EXECUTE AGENT TASK on ACCOUNTADMIN |
+| forecast_available | PASS | model created and dropped successfully |

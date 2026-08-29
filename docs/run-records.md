@@ -237,3 +237,49 @@ Key findings:
 - Empty/missing data handled gracefully — zero hallucination across all 5 edge cases
 - Golden-path "Why is CNC_01_SPINDLE at risk?" correctly cites vibration anomalies, bearing wear history, and cooling restriction prediction
 
+### Mission 05 — Governed Action Loop (2026-08-29)
+
+**Objects created/altered:**
+
+| Object | Schema | Type | Notes |
+|---|---|---|---|
+| ALERT | ACTION | Table | IF NOT EXISTS — already existed |
+| WORK_ORDER | ACTION | Table | IF NOT EXISTS — already existed |
+| WORK_ORDER_OUTBOX | ACTION | Table | IF NOT EXISTS — already existed |
+| ACTION_AUDIT | ACTION | Table | Append-only audit log |
+| PURCHASE_REQUISITION | ACTION | Table | IF NOT EXISTS — already existed |
+| SCORE_ALERTS | ACTION | Procedure | Reads DT_ASSET_HEALTH + ANOMALY_EVENTS, applies priority+confidence formulas, dedup merge |
+| CHECK_PARTS | ACTION | Procedure | Resolves parts kit, inserts PURCHASE_REQUISITION for shortages with AI-drafted RFQ |
+| CREATE_WORK_ORDER | ACTION | Procedure | Enforces ACKED state, human approver, no dup WO; reserves parts; fires GitHub+Slack |
+| NOTIFY_SLACK | ACTION | Procedure | Writes to OUTBOX target=SLACK (fallback-first) |
+| QUEUE_GITHUB_SYNC | ACTION | Procedure | Builds GitHub issue payload with parts table into OUTBOX |
+| RETRY_OUTBOX | ACTION | Procedure | Increments attempts, marks dead after 5 |
+| TASK_SCORE_ALERTS | ACTION | Task | Every 5 min on AEGIS_WH, RESUMED |
+| TASK_OUTBOX_RETRY | ACTION | Task | Every 10 min on AEGIS_WH, SUSPENDED |
+| ACTION_GUARDRAIL_RESULTS | TEST | Table | Persisted test results |
+
+**Files created:** `sql/06_alert_task.sql`, `sql/10_action_procs.sql`
+
+**Simulated golden-path pass:**
+
+| Step | Result |
+|---|---|
+| SCORE_ALERTS from DT_ASSET_HEALTH | 1 auto-scored alert (CNC_01_SPINDLE COOLING_RESTRICTION, P3/NEW, confidence 0.44 < 0.5 — observe) |
+| Seed P1 BEARING_WEAR alert | Synthetic P1 alert for golden-path parts shortage test |
+| ACK alert | Status set to ACKED |
+| Dry-run CREATE_WORK_ORDER | Preview returned with parts panel: P001 shortage=1, max_lead=7 days |
+| Real CREATE_WORK_ORDER | WO approved, parts reserved (P001 reserved=1), requisition linked, GitHub+Slack queued |
+| Post-approval verification | 1 WO, 1 OUTBOX GitHub, 1 OUTBOX Slack, 6 audit rows, 1 purchase requisition ($1250) |
+
+**Guardrail tests: 8/8 PASS**
+
+| Test | Result | Detail |
+|---|---|---|
+| non_acked_alert_rejected | PASS | CREATE_WORK_ORDER on NEW alert returned REJECTED |
+| approver_agent_rejected | PASS | approver='AGENT' returned REJECTED |
+| duplicate_wo_rejected | PASS | Duplicate open WO returned REJECTED |
+| dryrun_no_wo_write | PASS | WO count = 1 after dry-run + 1 real |
+| audit_rows_all_attempts | PASS | 9 audit rows covering all actions |
+| shortage_creates_requisition | PASS | P001 requisition with est_total=$1250 |
+| no_requisition_when_stocked | PASS | P002/P003 (fully stocked) — 0 requisitions |
+| approval_reserves_parts | PASS | P001 reserved=1, P002 reserved=3, P003 reserved=2 |

@@ -1,0 +1,12 @@
+version: 1
+artifacts:
+  - path: MANUFACTURING_OPERATIONS.sv.yaml
+    type: semantic_view
+    targets:
+      default:
+        object: AEGIS_OEE.SEMANTIC.MANUFACTURING_OPERATIONS
+  - path: AEGIS_RCA_AGENT.agent.yaml
+    type: cortex_agent
+    targets:
+      default:
+        object: AEGIS_OEE.ACTION.AEGIS_RCA_AGENT

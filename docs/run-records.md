@@ -180,3 +180,60 @@ View latency is up to ~1 hour; history covers 365 days.
 
 **Tuning notes:** RPM_INSTABILITY on conveyor gearboxes has subtle signature that neither ML nor z-score persistence catches reliably for short degradation windows. The baseline (z>2.0, no persistence) catches it but with many more false positives. Acceptable trade-off for production use.
 
+### Mission 04 — Semantic Layer, Search, and the RCA Agent (2026-08-29)
+
+**Objects created/altered:**
+
+| Object | Schema | Type | Notes |
+|---|---|---|---|
+| MANUFACTURING_OPERATIONS | SEMANTIC | Semantic View | 8 logical tables, 7 relationships, 10+ metrics, 15 VQRs |
+| MAINTENANCE_DOCS | SEMANTIC | Table | 50 rows (40 stage docs + 10 maintenance history) |
+| MAINTENANCE_SEARCH | SEMANTIC | Cortex Search Service | On CONTENT, attributes ASSET_ID/DOC_TYPE, 1h lag |
+| FF_RAW_TEXT | RAW | File Format | CSV, no delimiters (raw text ingestion) |
+| GET_ASSET_EVIDENCE | ACTION | Stored Procedure | Returns evidence bundle VARIANT for a given asset |
+| PROPOSE_WORK_ORDER | ACTION | Stored Procedure | Returns draft WO VARIANT, writes audit row only |
+| AEGIS_TOOLS_MCP | ACTION | MCP Server | Wraps GET_ASSET_EVIDENCE + PROPOSE_WORK_ORDER as agent tools |
+| AEGIS_RCA_AGENT | ACTION | Cortex Agent | Analyst + Search + MCP tools, 7-part RCA structure, governed |
+| AGENT_EVAL_RESULTS | TEST | Table | 25 evaluation question results |
+
+**Files created:**
+
+- `sql/07_semantic_view.sql` — Semantic view deployment + MCP server DDL
+- `sql/08_search_service.sql` — Cortex Search service over DOC_STAGE + technician notes
+- `sql/09_agent_tools.sql` — GET_ASSET_EVIDENCE + PROPOSE_WORK_ORDER procedures
+- `semantic/manufacturing_operations.yaml` — Full semantic model YAML (909 lines)
+- `semantic/verified_queries.yaml` — 15 verified queries extracted
+- `tests/analyst_eval.md` — 25-question evaluation report
+
+**Semantic View: MANUFACTURING_OPERATIONS**
+
+| Component | Count |
+|---|---|
+| Logical tables | 8 (DT_SHIFT_OEE, ASSET, DOWNTIME_EVENT, PRODUCTION_ORDER, ALERT, WORK_ORDER, DT_ASSET_HEALTH, V_MTBF_MTTR) |
+| Relationships | 7 (asset-centric star schema) |
+| Metrics | 12 (OEE, Availability, Performance, Quality, alert count, downtime totals, etc.) |
+| Verified queries | 15 |
+| Custom instructions | SQL generation + question categorization |
+
+**Agent: AEGIS_RCA_AGENT**
+
+- Tools: Cortex Analyst (manufacturing_operations SV), Cortex Search (MAINTENANCE_SEARCH), MCP (get_asset_evidence, propose_work_order)
+- Instructions: 7-part RCA response structure, confidence gate, propose-never-approve guardrail
+- Golden-path test: "Why is CNC_01_SPINDLE at risk?" returns bearing-wear assessment citing vibration slope, maintenance history, and OEE impact
+
+**Agent Evaluation: 25/25 = 100% PASS**
+
+| Category | Score | Avg Latency |
+|---|---|---|
+| FACTUAL | 5/5 | 26s |
+| CAUSAL | 5/5 | 85s |
+| TOOL-ROUTING | 5/5 | 29s |
+| REFUSAL | 5/5 | 22s |
+| MISSING-DATA | 5/5 | 27s |
+
+Key findings:
+- All CAUSAL responses used full 7-part RCA structure with timestamped, asset-specific evidence
+- All REFUSAL questions cleanly refused with appropriate alternatives offered
+- Empty/missing data handled gracefully — zero hallucination across all 5 edge cases
+- Golden-path "Why is CNC_01_SPINDLE at risk?" correctly cites vibration anomalies, bearing wear history, and cooling restriction prediction
+

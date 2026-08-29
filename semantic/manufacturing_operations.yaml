@@ -1,0 +1,908 @@
+name: MANUFACTURING_OPERATIONS
+description: >
+  Semantic model for manufacturing operations at Hyderabad Precision Components (HYD_PRECISION).
+  Covers OEE (Overall Equipment Effectiveness) analytics at shift grain, asset health monitoring,
+  predictive maintenance alerts, work orders, downtime analysis, and reliability metrics (MTBF/MTTR).
+  Plant has 2 lines (LINE_1, LINE_2) with 10 assets. Shifts: A (06:00-14:00 IST), B (14:00-22:00 IST).
+  OEE = Availability x Performance x Quality. Always recompute OEE from sums, never average percentages.
+
+tables:
+  # ── FACT: Shift-level OEE ──────────────────────────────────────────
+  - name: DT_SHIFT_OEE
+    description: >
+      Shift-level OEE fact table. Each row = one asset in one shift.
+      To compute aggregate OEE correctly, always re-derive from sums:
+      Availability = SUM(RUN_MIN) / SUM(PLANNED_MIN),
+      Performance = LEAST(SUM(IDEAL_CYCLE_S * TOTAL_COUNT) / (SUM(RUN_MIN) * 60), 1.0),
+      Quality = SUM(GOOD_COUNT) / SUM(TOTAL_COUNT),
+      OEE = Availability * Performance * Quality.
+      Never average the pre-computed AVAILABILITY, PERFORMANCE, QUALITY, or OEE columns across rows.
+    base_table:
+      database: AEGIS_OEE
+      schema: SEMANTIC
+      table: DT_SHIFT_OEE
+    dimensions:
+      - name: LINE_ID
+        description: Production line identifier (LINE_1 or LINE_2)
+        expr: LINE_ID
+        data_type: VARCHAR
+        synonyms:
+          - line
+          - production line
+      - name: ASSET_ID
+        description: Unique asset/machine identifier (e.g. CNC_01_SPINDLE, COOLANT_PUMP_01)
+        expr: ASSET_ID
+        data_type: VARCHAR
+        synonyms:
+          - asset
+          - machine
+          - equipment
+          - device
+      - name: SHIFT_CODE
+        description: "Shift identifier: A (morning 06:00-14:00 IST) or B (afternoon 14:00-22:00 IST)"
+        expr: SHIFT_CODE
+        data_type: VARCHAR
+        synonyms:
+          - shift
+          - shift name
+    time_dimensions:
+      - name: SHIFT_DATE
+        description: Calendar date of the shift
+        expr: SHIFT_DATE
+        data_type: DATE
+        synonyms:
+          - date
+          - day
+          - production date
+    facts:
+      - name: PLANNED_MIN
+        description: Planned production time in minutes (shift minutes minus planned downtime). Denominator for Availability.
+        expr: PLANNED_MIN
+        data_type: NUMBER
+        synonyms:
+          - planned production time
+          - planned minutes
+          - available time
+      - name: DOWNTIME_MIN
+        description: Unplanned downtime minutes allocated to this asset-shift by time overlap with downtime events
+        expr: DOWNTIME_MIN
+        data_type: NUMBER
+        synonyms:
+          - downtime
+          - unplanned downtime
+          - stoppage minutes
+          - outage
+      - name: RUN_MIN
+        description: Actual running time in minutes (planned minus unplanned downtime). Numerator for Availability.
+        expr: RUN_MIN
+        data_type: NUMBER
+        synonyms:
+          - run time
+          - operating time
+          - uptime
+      - name: TOTAL_COUNT
+        description: Total units produced in the shift (good + rejected)
+        expr: TOTAL_COUNT
+        data_type: NUMBER
+        synonyms:
+          - total production
+          - total units
+          - produced count
+          - output
+          - throughput
+      - name: GOOD_COUNT
+        description: Good (non-defective) units produced in the shift
+        expr: GOOD_COUNT
+        data_type: NUMBER
+        synonyms:
+          - good units
+          - good production
+          - quality units
+          - conforming units
+      - name: REJECT_COUNT
+        description: Rejected or defective units produced in the shift
+        expr: REJECT_COUNT
+        data_type: NUMBER
+        synonyms:
+          - rejects
+          - defects
+          - scrap
+          - bad units
+          - nonconforming
+      - name: IDEAL_CYCLE_S
+        description: Ideal cycle time in seconds per unit for this asset, used in Performance calculation
+        expr: IDEAL_CYCLE_S
+        data_type: NUMBER
+    metrics:
+      - name: TOTAL_PLANNED_MIN
+        description: Total planned production minutes across shifts
+        expr: SUM(PLANNED_MIN)
+        synonyms:
+          - total planned time
+      - name: TOTAL_DOWNTIME_MIN
+        description: Total unplanned downtime minutes across shifts
+        expr: SUM(DOWNTIME_MIN)
+        synonyms:
+          - total downtime
+          - total stoppage
+      - name: TOTAL_RUN_MIN
+        description: Total running time in minutes across shifts
+        expr: SUM(RUN_MIN)
+        synonyms:
+          - total uptime
+          - total run time
+      - name: TOTAL_PRODUCED
+        description: Total units produced across shifts
+        expr: SUM(TOTAL_COUNT)
+        synonyms:
+          - total output
+          - total production
+      - name: TOTAL_GOOD
+        description: Total good units produced across shifts
+        expr: SUM(GOOD_COUNT)
+      - name: TOTAL_REJECTS
+        description: Total rejected units across shifts
+        expr: SUM(REJECT_COUNT)
+        synonyms:
+          - total scrap
+          - total defects
+      - name: AVAILABILITY
+        description: >
+          Availability rate = SUM(RUN_MIN) / SUM(PLANNED_MIN). Measures uptime fraction.
+          A value of 1.0 means no unplanned downtime.
+        expr: SUM(RUN_MIN) / NULLIF(SUM(PLANNED_MIN), 0)
+        synonyms:
+          - availability rate
+          - uptime rate
+      - name: PERFORMANCE
+        description: >
+          Performance rate = SUM(IDEAL_CYCLE_S * TOTAL_COUNT) / (SUM(RUN_MIN) * 60), capped at 1.0.
+          Measures speed efficiency relative to ideal cycle time.
+        expr: LEAST(SUM(IDEAL_CYCLE_S * TOTAL_COUNT) / NULLIF(SUM(RUN_MIN) * 60, 0), 1.0)
+        synonyms:
+          - performance rate
+          - speed efficiency
+      - name: QUALITY
+        description: >
+          Quality rate = SUM(GOOD_COUNT) / SUM(TOTAL_COUNT). Measures first-pass yield.
+        expr: SUM(GOOD_COUNT) / NULLIF(SUM(TOTAL_COUNT), 0)
+        synonyms:
+          - quality rate
+          - yield
+          - first pass yield
+      - name: OEE
+        description: >
+          Overall Equipment Effectiveness = Availability x Performance x Quality.
+          Always derived from sums, never averaged. Typical range 0.55-0.85.
+        expr: >
+          (SUM(RUN_MIN) / NULLIF(SUM(PLANNED_MIN), 0))
+          * LEAST(SUM(IDEAL_CYCLE_S * TOTAL_COUNT) / NULLIF(SUM(RUN_MIN) * 60, 0), 1.0)
+          * (SUM(GOOD_COUNT) / NULLIF(SUM(TOTAL_COUNT), 0))
+        synonyms:
+          - overall equipment effectiveness
+          - equipment efficiency
+          - OEE score
+
+  # ── DIM: Asset ─────────────────────────────────────────────────────
+  - name: ASSET
+    description: >
+      Asset master dimension. Contains static attributes for each machine/equipment.
+      10 assets across 2 lines at site HYD_PRECISION. Criticality 1-5 (5 = most critical).
+    base_table:
+      database: AEGIS_OEE
+      schema: CORE
+      table: ASSET
+    primary_key:
+      columns:
+        - ASSET_ID
+    dimensions:
+      - name: ASSET_ID
+        description: Unique asset identifier (primary key)
+        expr: ASSET_ID
+        data_type: VARCHAR
+        synonyms:
+          - asset
+          - machine
+          - equipment
+      - name: LINE_ID
+        description: Production line the asset belongs to
+        expr: LINE_ID
+        data_type: VARCHAR
+        synonyms:
+          - line
+      - name: SITE_ID
+        description: Plant/site identifier (HYD_PRECISION)
+        expr: SITE_ID
+        data_type: VARCHAR
+        synonyms:
+          - site
+          - plant
+          - factory
+      - name: ASSET_TYPE
+        description: "Type/category of the asset: CNC spindle, coolant pump, servo motor, conveyor gearbox, air compressor"
+        expr: ASSET_TYPE
+        data_type: VARCHAR
+        synonyms:
+          - machine type
+          - equipment type
+          - asset category
+      - name: MANUFACTURER
+        description: Equipment manufacturer name
+        expr: MANUFACTURER
+        data_type: VARCHAR
+      - name: CRITICALITY
+        description: Asset criticality rating from 1 (lowest) to 5 (highest). CNC_01_SPINDLE is criticality 5.
+        expr: CRITICALITY
+        data_type: NUMBER
+        synonyms:
+          - importance
+          - priority rating
+    time_dimensions:
+      - name: INSTALL_DATE
+        description: Date the asset was installed
+        expr: INSTALL_DATE
+        data_type: DATE
+    facts:
+      - name: IDEAL_RPM
+        description: Nominal/ideal RPM for the asset
+        expr: IDEAL_RPM
+        data_type: NUMBER
+      - name: TEMP_LIMIT_C
+        description: Maximum safe temperature in Celsius
+        expr: TEMP_LIMIT_C
+        data_type: NUMBER
+      - name: VIB_ALERT_MM_S
+        description: Vibration alert threshold in mm/s (ISO 10816)
+        expr: VIB_ALERT_MM_S
+        data_type: NUMBER
+      - name: VIB_DANGER_MM_S
+        description: Vibration danger threshold in mm/s (ISO 10816)
+        expr: VIB_DANGER_MM_S
+        data_type: NUMBER
+
+  # ── FACT: Downtime Events ──────────────────────────────────────────
+  - name: DOWNTIME_EVENT
+    description: >
+      Downtime events for each asset. Each row is one downtime episode with start/end timestamps.
+      IS_PLANNED=TRUE for scheduled maintenance, FALSE for unplanned breakdowns.
+      FAILURE_MODE indicates the root cause (BEARING_WEAR, LUBRICATION_LOSS, etc.).
+    base_table:
+      database: AEGIS_OEE
+      schema: CORE
+      table: DOWNTIME_EVENT
+    dimensions:
+      - name: EVENT_ID
+        description: Unique downtime event identifier
+        expr: EVENT_ID
+        data_type: VARCHAR
+      - name: DT_ASSET_ID
+        description: Asset that experienced the downtime
+        expr: ASSET_ID
+        data_type: VARCHAR
+        synonyms:
+          - asset
+      - name: IS_PLANNED
+        description: Whether the downtime was planned (TRUE) or unplanned breakdown (FALSE)
+        expr: IS_PLANNED
+        data_type: BOOLEAN
+        synonyms:
+          - planned downtime
+          - scheduled
+      - name: REASON_CODE
+        description: Reason code for the downtime event
+        expr: REASON_CODE
+        data_type: VARCHAR
+        synonyms:
+          - reason
+          - cause code
+      - name: FAILURE_MODE
+        description: "Failure mode: BEARING_WEAR, LUBRICATION_LOSS, COOLING_RESTRICTION, RPM_INSTABILITY, SENSOR_FAULT"
+        expr: FAILURE_MODE
+        data_type: VARCHAR
+        synonyms:
+          - failure type
+          - fault mode
+          - breakdown cause
+    time_dimensions:
+      - name: START_TS
+        description: Downtime start timestamp
+        expr: START_TS
+        data_type: TIMESTAMP
+        synonyms:
+          - downtime start
+      - name: END_TS
+        description: Downtime end timestamp
+        expr: END_TS
+        data_type: TIMESTAMP
+        synonyms:
+          - downtime end
+    facts:
+      - name: DOWNTIME_MINUTES
+        description: Duration of the downtime event in minutes
+        expr: MINUTES
+        data_type: NUMBER
+        synonyms:
+          - downtime duration
+          - outage duration
+          - stoppage time
+    metrics:
+      - name: TOTAL_DOWNTIME_EVENTS
+        description: Count of downtime events
+        expr: COUNT(*)
+        synonyms:
+          - number of events
+          - event count
+      - name: SUM_DOWNTIME_MINUTES
+        description: Total downtime minutes from events
+        expr: SUM(MINUTES)
+        synonyms:
+          - total downtime duration
+
+  # ── FACT: Production Orders ────────────────────────────────────────
+  - name: PRODUCTION_ORDER
+    description: >
+      Production orders assigned to lines. Each order has a product code, planned quantity,
+      and a planned time window. Used for production scheduling context.
+    base_table:
+      database: AEGIS_OEE
+      schema: CORE
+      table: PRODUCTION_ORDER
+    dimensions:
+      - name: ORDER_ID
+        description: Unique production order identifier
+        expr: ORDER_ID
+        data_type: VARCHAR
+        synonyms:
+          - order
+          - production order
+          - PO
+      - name: PO_LINE_ID
+        description: Production line assigned to this order
+        expr: LINE_ID
+        data_type: VARCHAR
+      - name: PRODUCT_CODE
+        description: Product being manufactured (e.g. PART_A100, PART_C300)
+        expr: PRODUCT_CODE
+        data_type: VARCHAR
+        synonyms:
+          - product
+          - part number
+          - SKU
+    time_dimensions:
+      - name: PLANNED_START_TS
+        description: Planned start timestamp for the order
+        expr: PLANNED_START_TS
+        data_type: TIMESTAMP
+      - name: PLANNED_END_TS
+        description: Planned end timestamp for the order
+        expr: PLANNED_END_TS
+        data_type: TIMESTAMP
+    facts:
+      - name: PLANNED_QTY
+        description: Planned quantity of units to produce
+        expr: PLANNED_QTY
+        data_type: NUMBER
+        synonyms:
+          - planned quantity
+          - target quantity
+
+  # ── FACT: Alerts ───────────────────────────────────────────────────
+  - name: ALERT
+    description: >
+      Predictive maintenance alerts generated by the ML pipeline.
+      Severity: P1 (critical), P2 (warning), P3 (informational).
+      Status: NEW, TRIAGED, ACKED, SUPPRESSED, CLOSED.
+    base_table:
+      database: AEGIS_OEE
+      schema: ACTION
+      table: ALERT
+    primary_key:
+      columns:
+        - ALERT_ID
+    dimensions:
+      - name: ALERT_ID
+        description: Unique alert identifier
+        expr: ALERT_ID
+        data_type: VARCHAR
+      - name: ALERT_ASSET_ID
+        description: Asset the alert is for
+        expr: ASSET_ID
+        data_type: VARCHAR
+        synonyms:
+          - asset
+      - name: SEVERITY
+        description: "Alert severity: P1 (critical, score >= 0.5), P2 (warning, >= 0.25), P3 (informational)"
+        expr: SEVERITY
+        data_type: VARCHAR
+        synonyms:
+          - alert severity
+          - priority
+          - alert level
+      - name: PREDICTED_MODE
+        description: Predicted failure mode (BEARING_WEAR, LUBRICATION_LOSS, COOLING_RESTRICTION, RPM_INSTABILITY, SENSOR_FAULT)
+        expr: PREDICTED_MODE
+        data_type: VARCHAR
+        synonyms:
+          - predicted failure
+          - predicted fault
+      - name: ALERT_STATUS
+        description: "Current alert status: NEW, TRIAGED, ACKED, SUPPRESSED, CLOSED"
+        expr: STATUS
+        data_type: VARCHAR
+        synonyms:
+          - alert state
+          - status
+    time_dimensions:
+      - name: ONSET_TS
+        description: Timestamp when the alert was first raised
+        expr: ONSET_TS
+        data_type: TIMESTAMP
+        synonyms:
+          - alert time
+          - alert date
+    facts:
+      - name: CONFIDENCE
+        description: Model confidence score (0 to 1). Below 0.5 = observe only, no work order.
+        expr: CONFIDENCE
+        data_type: NUMBER
+      - name: FAILURE_PROBABILITY
+        description: Probability of failure within 24 hours (0 to 1)
+        expr: FAILURE_PROBABILITY
+        data_type: NUMBER
+        synonyms:
+          - failure risk
+          - failure likelihood
+      - name: OEE_IMPACT_EST
+        description: Estimated OEE percentage loss if the predicted failure occurs
+        expr: OEE_IMPACT_EST
+        data_type: NUMBER
+        synonyms:
+          - estimated OEE loss
+          - OEE impact
+    metrics:
+      - name: ALERT_COUNT
+        description: Total count of alerts
+        expr: COUNT(*)
+        synonyms:
+          - number of alerts
+          - alert volume
+      - name: TOTAL_OEE_IMPACT
+        description: Sum of estimated OEE loss across alerts
+        expr: SUM(OEE_IMPACT_EST)
+        synonyms:
+          - total OEE loss
+          - cumulative OEE impact
+
+  # ── FACT: Work Orders ──────────────────────────────────────────────
+  - name: WORK_ORDER
+    description: >
+      Maintenance work orders linked to alerts. State lifecycle: DRAFT -> APPROVED -> SYNCED -> CLOSED (or REJECTED).
+      The agent proposes work orders but never approves them - human approval is required.
+    base_table:
+      database: AEGIS_OEE
+      schema: ACTION
+      table: WORK_ORDER
+    dimensions:
+      - name: WO_ID
+        description: Unique work order identifier
+        expr: WO_ID
+        data_type: VARCHAR
+        synonyms:
+          - work order
+          - WO
+          - maintenance order
+      - name: WO_ALERT_ID
+        description: Alert that triggered this work order
+        expr: ALERT_ID
+        data_type: VARCHAR
+      - name: WO_ASSET_ID
+        description: Asset the work order is for
+        expr: ASSET_ID
+        data_type: VARCHAR
+      - name: WO_PRIORITY
+        description: Work order priority (P1, P2, P3)
+        expr: PRIORITY
+        data_type: VARCHAR
+        synonyms:
+          - priority
+      - name: WO_STATE
+        description: "Work order state: DRAFT, APPROVED, SYNCED, CLOSED, REJECTED"
+        expr: STATE
+        data_type: VARCHAR
+        synonyms:
+          - work order status
+          - WO state
+      - name: WO_TITLE
+        description: Work order title describing the maintenance action
+        expr: TITLE
+        data_type: VARCHAR
+    time_dimensions:
+      - name: APPROVED_TS
+        description: Timestamp when the work order was approved
+        expr: APPROVED_TS
+        data_type: TIMESTAMP
+    metrics:
+      - name: WO_COUNT
+        description: Count of work orders
+        expr: COUNT(*)
+        synonyms:
+          - number of work orders
+          - work order count
+
+  # ── FACT: Asset Health (current) ───────────────────────────────────
+  - name: DT_ASSET_HEALTH
+    description: >
+      Current health status for each asset. Updated continuously via Dynamic Table.
+      Health score 0-100 (higher = healthier). Risk levels: LOW, MEDIUM, HIGH, CRITICAL.
+    base_table:
+      database: AEGIS_OEE
+      schema: FEATURES
+      table: DT_ASSET_HEALTH
+    dimensions:
+      - name: HEALTH_ASSET_ID
+        description: Asset identifier
+        expr: ASSET_ID
+        data_type: VARCHAR
+        synonyms:
+          - asset
+      - name: PREDICTED_FAILURE_MODE
+        description: ML-predicted most likely failure mode (if any)
+        expr: PREDICTED_MODE
+        data_type: VARCHAR
+        synonyms:
+          - predicted mode
+          - failure prediction
+      - name: RISK_LEVEL
+        description: "Current risk level: LOW, MEDIUM, HIGH, CRITICAL"
+        expr: RISK_LEVEL
+        data_type: VARCHAR
+        synonyms:
+          - risk
+          - risk status
+          - health status
+    time_dimensions:
+      - name: LAST_READING_TS
+        description: Timestamp of the most recent sensor reading used for health scoring
+        expr: LAST_READING_TS
+        data_type: TIMESTAMP
+    facts:
+      - name: HEALTH_SCORE
+        description: Overall health score from 0 (failing) to 100 (perfect)
+        expr: HEALTH_SCORE
+        data_type: NUMBER
+        synonyms:
+          - health
+          - equipment health
+          - condition score
+      - name: ANOMALY_DISTANCE
+        description: Anomaly distance from the ML model - higher values indicate more anomalous behavior
+        expr: ANOMALY_DISTANCE
+        data_type: NUMBER
+        synonyms:
+          - anomaly score
+      - name: FAILURE_PROBABILITY_24H
+        description: ML-predicted probability of failure within the next 24 hours (0 to 1)
+        expr: FAILURE_PROBABILITY_24H
+        data_type: NUMBER
+        synonyms:
+          - failure probability
+          - failure risk
+          - risk score
+
+  # ── FACT: MTBF/MTTR Reliability ────────────────────────────────────
+  - name: V_MTBF_MTTR
+    description: >
+      Asset-level reliability metrics: Mean Time Between Failures (MTBF) and Mean Time To Repair (MTTR).
+      MTBF = total run time / failure count. MTTR = total unplanned downtime / failure count.
+    base_table:
+      database: AEGIS_OEE
+      schema: SEMANTIC
+      table: V_MTBF_MTTR
+    dimensions:
+      - name: MTBF_ASSET_ID
+        description: Asset identifier
+        expr: ASSET_ID
+        data_type: VARCHAR
+        synonyms:
+          - asset
+      - name: MTBF_ASSET_TYPE
+        description: Type of asset (CNC spindle, coolant pump, etc.)
+        expr: ASSET_TYPE
+        data_type: VARCHAR
+        synonyms:
+          - machine type
+      - name: MTBF_LINE_ID
+        description: Production line
+        expr: LINE_ID
+        data_type: VARCHAR
+    facts:
+      - name: FAILURE_COUNT
+        description: Number of unplanned failures recorded for this asset
+        expr: FAILURE_COUNT
+        data_type: NUMBER
+        synonyms:
+          - failures
+          - breakdown count
+      - name: TOTAL_UNPLANNED_DOWNTIME_MIN
+        description: Total unplanned downtime in minutes across all failures
+        expr: TOTAL_UNPLANNED_DOWNTIME_MIN
+        data_type: NUMBER
+      - name: TOTAL_RUN_MIN_MTBF
+        description: Total running time in minutes
+        expr: TOTAL_RUN_MIN
+        data_type: NUMBER
+      - name: MTBF_MIN
+        description: Mean Time Between Failures in minutes
+        expr: MTBF_MIN
+        data_type: NUMBER
+        synonyms:
+          - MTBF
+          - mean time between failures
+      - name: MTTR_MIN
+        description: Mean Time To Repair in minutes
+        expr: MTTR_MIN
+        data_type: NUMBER
+        synonyms:
+          - MTTR
+          - mean time to repair
+          - repair time
+
+relationships:
+  - name: oee_to_asset
+    left_table: DT_SHIFT_OEE
+    right_table: ASSET
+    relationship_columns:
+      - left_column: ASSET_ID
+        right_column: ASSET_ID
+  - name: downtime_to_asset
+    left_table: DOWNTIME_EVENT
+    right_table: ASSET
+    relationship_columns:
+      - left_column: ASSET_ID
+        right_column: ASSET_ID
+  - name: alert_to_asset
+    left_table: ALERT
+    right_table: ASSET
+    relationship_columns:
+      - left_column: ASSET_ID
+        right_column: ASSET_ID
+  - name: wo_to_alert
+    left_table: WORK_ORDER
+    right_table: ALERT
+    relationship_columns:
+      - left_column: ALERT_ID
+        right_column: ALERT_ID
+  - name: wo_to_asset
+    left_table: WORK_ORDER
+    right_table: ASSET
+    relationship_columns:
+      - left_column: ASSET_ID
+        right_column: ASSET_ID
+  - name: health_to_asset
+    left_table: DT_ASSET_HEALTH
+    right_table: ASSET
+    relationship_columns:
+      - left_column: ASSET_ID
+        right_column: ASSET_ID
+  - name: mtbf_to_asset
+    left_table: V_MTBF_MTTR
+    right_table: ASSET
+    relationship_columns:
+      - left_column: ASSET_ID
+        right_column: ASSET_ID
+
+verified_queries:
+  - name: lowest_oee_asset_last_7_days
+    question: Which asset had the lowest OEE in the last 7 days?
+    sql: >
+      SELECT o.ASSET_ID,
+             SUM(o.RUN_MIN) / NULLIF(SUM(o.PLANNED_MIN), 0) AS availability,
+             LEAST(SUM(o.IDEAL_CYCLE_S * o.TOTAL_COUNT) / NULLIF(SUM(o.RUN_MIN) * 60, 0), 1.0) AS performance,
+             SUM(o.GOOD_COUNT) / NULLIF(SUM(o.TOTAL_COUNT), 0) AS quality,
+             (SUM(o.RUN_MIN) / NULLIF(SUM(o.PLANNED_MIN), 0))
+             * LEAST(SUM(o.IDEAL_CYCLE_S * o.TOTAL_COUNT) / NULLIF(SUM(o.RUN_MIN) * 60, 0), 1.0)
+             * (SUM(o.GOOD_COUNT) / NULLIF(SUM(o.TOTAL_COUNT), 0)) AS oee
+      FROM AEGIS_OEE.SEMANTIC.DT_SHIFT_OEE o
+      WHERE o.SHIFT_DATE >= DATEADD('day', -7, CURRENT_DATE())
+      GROUP BY o.ASSET_ID
+      ORDER BY oee ASC
+      LIMIT 5
+    verified_by: SYSTEM
+    verified_at: 1788105600
+
+  - name: oee_by_line_last_7_days
+    question: What is the OEE for each production line over the last 7 days?
+    sql: >
+      SELECT o.LINE_ID,
+             SUM(o.RUN_MIN) / NULLIF(SUM(o.PLANNED_MIN), 0) AS availability,
+             LEAST(SUM(o.IDEAL_CYCLE_S * o.TOTAL_COUNT) / NULLIF(SUM(o.RUN_MIN) * 60, 0), 1.0) AS performance,
+             SUM(o.GOOD_COUNT) / NULLIF(SUM(o.TOTAL_COUNT), 0) AS quality,
+             (SUM(o.RUN_MIN) / NULLIF(SUM(o.PLANNED_MIN), 0))
+             * LEAST(SUM(o.IDEAL_CYCLE_S * o.TOTAL_COUNT) / NULLIF(SUM(o.RUN_MIN) * 60, 0), 1.0)
+             * (SUM(o.GOOD_COUNT) / NULLIF(SUM(o.TOTAL_COUNT), 0)) AS oee
+      FROM AEGIS_OEE.SEMANTIC.DT_SHIFT_OEE o
+      WHERE o.SHIFT_DATE >= DATEADD('day', -7, CURRENT_DATE())
+      GROUP BY o.LINE_ID
+      ORDER BY o.LINE_ID
+    verified_by: SYSTEM
+    verified_at: 1788105600
+
+  - name: oee_trend_by_shift
+    question: Show the daily OEE trend by shift for LINE_1 in the last 7 days
+    sql: >
+      SELECT o.SHIFT_DATE, o.SHIFT_CODE,
+             SUM(o.RUN_MIN) / NULLIF(SUM(o.PLANNED_MIN), 0) AS availability,
+             LEAST(SUM(o.IDEAL_CYCLE_S * o.TOTAL_COUNT) / NULLIF(SUM(o.RUN_MIN) * 60, 0), 1.0) AS performance,
+             SUM(o.GOOD_COUNT) / NULLIF(SUM(o.TOTAL_COUNT), 0) AS quality,
+             (SUM(o.RUN_MIN) / NULLIF(SUM(o.PLANNED_MIN), 0))
+             * LEAST(SUM(o.IDEAL_CYCLE_S * o.TOTAL_COUNT) / NULLIF(SUM(o.RUN_MIN) * 60, 0), 1.0)
+             * (SUM(o.GOOD_COUNT) / NULLIF(SUM(o.TOTAL_COUNT), 0)) AS oee
+      FROM AEGIS_OEE.SEMANTIC.DT_SHIFT_OEE o
+      WHERE o.LINE_ID = 'LINE_1' AND o.SHIFT_DATE >= DATEADD('day', -7, CURRENT_DATE())
+      GROUP BY o.SHIFT_DATE, o.SHIFT_CODE
+      ORDER BY o.SHIFT_DATE, o.SHIFT_CODE
+    verified_by: SYSTEM
+    verified_at: 1788105600
+
+  - name: availability_by_asset_today
+    question: What is the availability for each asset today?
+    sql: >
+      SELECT o.ASSET_ID,
+             SUM(o.RUN_MIN) / NULLIF(SUM(o.PLANNED_MIN), 0) AS availability
+      FROM AEGIS_OEE.SEMANTIC.DT_SHIFT_OEE o
+      WHERE o.SHIFT_DATE = CURRENT_DATE()
+      GROUP BY o.ASSET_ID
+      ORDER BY availability ASC
+    verified_by: SYSTEM
+    verified_at: 1788105600
+
+  - name: most_downtime_line_this_month
+    question: Which line has the most unplanned downtime this month?
+    sql: >
+      SELECT a.LINE_ID, SUM(d.MINUTES) AS total_downtime_min
+      FROM AEGIS_OEE.CORE.DOWNTIME_EVENT d
+      JOIN AEGIS_OEE.CORE.ASSET a ON d.ASSET_ID = a.ASSET_ID
+      WHERE d.IS_PLANNED = FALSE
+        AND d.START_TS >= DATE_TRUNC('month', CURRENT_DATE())
+      GROUP BY a.LINE_ID
+      ORDER BY total_downtime_min DESC
+    verified_by: SYSTEM
+    verified_at: 1788105600
+
+  - name: reject_count_by_asset_last_7
+    question: What are the reject counts by asset for the last week?
+    sql: >
+      SELECT o.ASSET_ID, SUM(o.REJECT_COUNT) AS total_rejects
+      FROM AEGIS_OEE.SEMANTIC.DT_SHIFT_OEE o
+      WHERE o.SHIFT_DATE >= DATEADD('day', -7, CURRENT_DATE())
+      GROUP BY o.ASSET_ID
+      ORDER BY total_rejects DESC
+    verified_by: SYSTEM
+    verified_at: 1788105600
+
+  - name: quality_rate_by_line
+    question: What is the quality rate by production line for the last 30 days?
+    sql: >
+      SELECT o.LINE_ID,
+             SUM(o.GOOD_COUNT) AS total_good,
+             SUM(o.TOTAL_COUNT) AS total_produced,
+             SUM(o.GOOD_COUNT) / NULLIF(SUM(o.TOTAL_COUNT), 0) AS quality_rate
+      FROM AEGIS_OEE.SEMANTIC.DT_SHIFT_OEE o
+      WHERE o.SHIFT_DATE >= DATEADD('day', -30, CURRENT_DATE())
+      GROUP BY o.LINE_ID
+      ORDER BY o.LINE_ID
+    verified_by: SYSTEM
+    verified_at: 1788105600
+
+  - name: performance_by_line1_assets
+    question: What is the performance rate for LINE_1 assets this week?
+    sql: >
+      SELECT o.ASSET_ID,
+             LEAST(SUM(o.IDEAL_CYCLE_S * o.TOTAL_COUNT) / NULLIF(SUM(o.RUN_MIN) * 60, 0), 1.0) AS performance
+      FROM AEGIS_OEE.SEMANTIC.DT_SHIFT_OEE o
+      WHERE o.LINE_ID = 'LINE_1' AND o.SHIFT_DATE >= DATE_TRUNC('week', CURRENT_DATE())
+      GROUP BY o.ASSET_ID
+      ORDER BY performance ASC
+    verified_by: SYSTEM
+    verified_at: 1788105600
+
+  - name: average_oee_by_shift_code
+    question: What is the OEE by shift code (A vs B)?
+    sql: >
+      SELECT o.SHIFT_CODE,
+             (SUM(o.RUN_MIN) / NULLIF(SUM(o.PLANNED_MIN), 0))
+             * LEAST(SUM(o.IDEAL_CYCLE_S * o.TOTAL_COUNT) / NULLIF(SUM(o.RUN_MIN) * 60, 0), 1.0)
+             * (SUM(o.GOOD_COUNT) / NULLIF(SUM(o.TOTAL_COUNT), 0)) AS oee
+      FROM AEGIS_OEE.SEMANTIC.DT_SHIFT_OEE o
+      GROUP BY o.SHIFT_CODE
+      ORDER BY o.SHIFT_CODE
+    verified_by: SYSTEM
+    verified_at: 1788105600
+
+  - name: downtime_by_failure_mode
+    question: Which failure mode causes the most downtime?
+    sql: >
+      SELECT d.FAILURE_MODE, SUM(d.MINUTES) AS total_downtime_min, COUNT(*) AS event_count
+      FROM AEGIS_OEE.CORE.DOWNTIME_EVENT d
+      WHERE d.IS_PLANNED = FALSE AND d.FAILURE_MODE IS NOT NULL
+      GROUP BY d.FAILURE_MODE
+      ORDER BY total_downtime_min DESC
+    verified_by: SYSTEM
+    verified_at: 1788105600
+
+  - name: highest_failure_probability_assets
+    question: Which assets have the highest failure probability right now?
+    sql: >
+      SELECT h.ASSET_ID, a.ASSET_TYPE, a.LINE_ID, a.CRITICALITY,
+             h.HEALTH_SCORE, h.FAILURE_PROBABILITY_24H, h.PREDICTED_MODE, h.RISK_LEVEL
+      FROM AEGIS_OEE.FEATURES.DT_ASSET_HEALTH h
+      JOIN AEGIS_OEE.CORE.ASSET a ON h.ASSET_ID = a.ASSET_ID
+      ORDER BY h.FAILURE_PROBABILITY_24H DESC
+      LIMIT 5
+    verified_by: SYSTEM
+    verified_at: 1788105600
+
+  - name: open_alerts_by_severity
+    question: How many alerts are open by severity?
+    sql: >
+      SELECT al.SEVERITY, al.STATUS, COUNT(*) AS alert_count
+      FROM AEGIS_OEE.ACTION.ALERT al
+      WHERE al.STATUS NOT IN ('CLOSED', 'SUPPRESSED')
+      GROUP BY al.SEVERITY, al.STATUS
+      ORDER BY al.SEVERITY, al.STATUS
+    verified_by: SYSTEM
+    verified_at: 1788105600
+
+  - name: mtbf_mttr_by_asset_type
+    question: What is the MTBF and MTTR for each asset type?
+    sql: >
+      SELECT m.ASSET_TYPE,
+             AVG(m.MTBF_MIN) AS avg_mtbf_min,
+             AVG(m.MTTR_MIN) AS avg_mttr_min,
+             SUM(m.FAILURE_COUNT) AS total_failures
+      FROM AEGIS_OEE.SEMANTIC.V_MTBF_MTTR m
+      GROUP BY m.ASSET_TYPE
+      ORDER BY avg_mtbf_min ASC
+    verified_by: SYSTEM
+    verified_at: 1788105600
+
+  - name: work_orders_by_state
+    question: How many work orders are in each state?
+    sql: >
+      SELECT w.STATE, COUNT(*) AS wo_count
+      FROM AEGIS_OEE.ACTION.WORK_ORDER w
+      GROUP BY w.STATE
+      ORDER BY wo_count DESC
+    verified_by: SYSTEM
+    verified_at: 1788105600
+
+  - name: estimated_oee_loss_from_alerts
+    question: What is the total estimated OEE loss from current alerts?
+    sql: >
+      SELECT al.ASSET_ID, al.SEVERITY, al.PREDICTED_MODE,
+             al.OEE_IMPACT_EST AS estimated_oee_loss_pct,
+             al.FAILURE_PROBABILITY, al.CONFIDENCE
+      FROM AEGIS_OEE.ACTION.ALERT al
+      WHERE al.STATUS NOT IN ('CLOSED', 'SUPPRESSED')
+      ORDER BY al.OEE_IMPACT_EST DESC NULLS LAST
+    verified_by: SYSTEM
+    verified_at: 1788105600
+
+module_custom_instructions:
+  sql_generation: >
+    When computing OEE metrics across multiple rows, always re-derive from sums of numerators and denominators.
+    Never average pre-computed ratios like AVAILABILITY, PERFORMANCE, QUALITY, or OEE columns.
+    The correct formulas are:
+    Availability = SUM(RUN_MIN) / SUM(PLANNED_MIN),
+    Performance = LEAST(SUM(IDEAL_CYCLE_S * TOTAL_COUNT) / (SUM(RUN_MIN) * 60), 1.0),
+    Quality = SUM(GOOD_COUNT) / SUM(TOTAL_COUNT),
+    OEE = Availability * Performance * Quality.
+    Use NULLIF to prevent division by zero.
+    For MTBF and MTTR, these are pre-computed per asset in V_MTBF_MTTR.
+    The plant is Hyderabad Precision Components with lines LINE_1 and LINE_2.
+    Shift A runs 06:00-14:00 IST, Shift B runs 14:00-22:00 IST.
+  question_categorization: >
+    This semantic view covers manufacturing OEE analytics, predictive maintenance alerts,
+    asset health monitoring, work orders, downtime analysis, and reliability metrics.
+    Questions about sensor telemetry raw data, training ML models, or approving work orders
+    are outside the scope of this view.

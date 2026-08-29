@@ -1,0 +1,136 @@
+verified_queries:
+- name: lowest_oee_asset_last_7_days
+  question: Which asset had the lowest OEE in the last 7 days?
+  sql: "SELECT o.ASSET_ID,\n       SUM(o.RUN_MIN) / NULLIF(SUM(o.PLANNED_MIN), 0)\
+    \ AS availability,\n       LEAST(SUM(o.IDEAL_CYCLE_S * o.TOTAL_COUNT) / NULLIF(SUM(o.RUN_MIN)\
+    \ * 60, 0), 1.0) AS performance,\n       SUM(o.GOOD_COUNT) / NULLIF(SUM(o.TOTAL_COUNT),\
+    \ 0) AS quality,\n       (SUM(o.RUN_MIN) / NULLIF(SUM(o.PLANNED_MIN), 0))\n  \
+    \     * LEAST(SUM(o.IDEAL_CYCLE_S * o.TOTAL_COUNT) / NULLIF(SUM(o.RUN_MIN) * 60,\
+    \ 0), 1.0)\n       * (SUM(o.GOOD_COUNT) / NULLIF(SUM(o.TOTAL_COUNT), 0)) AS oee\n\
+    FROM AEGIS_OEE.SEMANTIC.DT_SHIFT_OEE o WHERE o.SHIFT_DATE >= DATEADD('day', -7,\
+    \ CURRENT_DATE()) GROUP BY o.ASSET_ID ORDER BY oee ASC LIMIT 5\n"
+  verified_at: 1788105600
+  verified_by: SYSTEM
+- name: oee_by_line_last_7_days
+  question: What is the OEE for each production line over the last 7 days?
+  sql: "SELECT o.LINE_ID,\n       SUM(o.RUN_MIN) / NULLIF(SUM(o.PLANNED_MIN), 0) AS\
+    \ availability,\n       LEAST(SUM(o.IDEAL_CYCLE_S * o.TOTAL_COUNT) / NULLIF(SUM(o.RUN_MIN)\
+    \ * 60, 0), 1.0) AS performance,\n       SUM(o.GOOD_COUNT) / NULLIF(SUM(o.TOTAL_COUNT),\
+    \ 0) AS quality,\n       (SUM(o.RUN_MIN) / NULLIF(SUM(o.PLANNED_MIN), 0))\n  \
+    \     * LEAST(SUM(o.IDEAL_CYCLE_S * o.TOTAL_COUNT) / NULLIF(SUM(o.RUN_MIN) * 60,\
+    \ 0), 1.0)\n       * (SUM(o.GOOD_COUNT) / NULLIF(SUM(o.TOTAL_COUNT), 0)) AS oee\n\
+    FROM AEGIS_OEE.SEMANTIC.DT_SHIFT_OEE o WHERE o.SHIFT_DATE >= DATEADD('day', -7,\
+    \ CURRENT_DATE()) GROUP BY o.LINE_ID ORDER BY o.LINE_ID\n"
+  verified_at: 1788105600
+  verified_by: SYSTEM
+- name: oee_trend_by_shift
+  question: Show the daily OEE trend by shift for LINE_1 in the last 7 days
+  sql: "SELECT o.SHIFT_DATE, o.SHIFT_CODE,\n       SUM(o.RUN_MIN) / NULLIF(SUM(o.PLANNED_MIN),\
+    \ 0) AS availability,\n       LEAST(SUM(o.IDEAL_CYCLE_S * o.TOTAL_COUNT) / NULLIF(SUM(o.RUN_MIN)\
+    \ * 60, 0), 1.0) AS performance,\n       SUM(o.GOOD_COUNT) / NULLIF(SUM(o.TOTAL_COUNT),\
+    \ 0) AS quality,\n       (SUM(o.RUN_MIN) / NULLIF(SUM(o.PLANNED_MIN), 0))\n  \
+    \     * LEAST(SUM(o.IDEAL_CYCLE_S * o.TOTAL_COUNT) / NULLIF(SUM(o.RUN_MIN) * 60,\
+    \ 0), 1.0)\n       * (SUM(o.GOOD_COUNT) / NULLIF(SUM(o.TOTAL_COUNT), 0)) AS oee\n\
+    FROM AEGIS_OEE.SEMANTIC.DT_SHIFT_OEE o WHERE o.LINE_ID = 'LINE_1' AND o.SHIFT_DATE\
+    \ >= DATEADD('day', -7, CURRENT_DATE()) GROUP BY o.SHIFT_DATE, o.SHIFT_CODE ORDER\
+    \ BY o.SHIFT_DATE, o.SHIFT_CODE\n"
+  verified_at: 1788105600
+  verified_by: SYSTEM
+- name: availability_by_asset_today
+  question: What is the availability for each asset today?
+  sql: "SELECT o.ASSET_ID,\n       SUM(o.RUN_MIN) / NULLIF(SUM(o.PLANNED_MIN), 0)\
+    \ AS availability\nFROM AEGIS_OEE.SEMANTIC.DT_SHIFT_OEE o WHERE o.SHIFT_DATE =\
+    \ CURRENT_DATE() GROUP BY o.ASSET_ID ORDER BY availability ASC\n"
+  verified_at: 1788105600
+  verified_by: SYSTEM
+- name: most_downtime_line_this_month
+  question: Which line has the most unplanned downtime this month?
+  sql: "SELECT a.LINE_ID, SUM(d.MINUTES) AS total_downtime_min FROM AEGIS_OEE.CORE.DOWNTIME_EVENT\
+    \ d JOIN AEGIS_OEE.CORE.ASSET a ON d.ASSET_ID = a.ASSET_ID WHERE d.IS_PLANNED\
+    \ = FALSE\n  AND d.START_TS >= DATE_TRUNC('month', CURRENT_DATE())\nGROUP BY a.LINE_ID\
+    \ ORDER BY total_downtime_min DESC\n"
+  verified_at: 1788105600
+  verified_by: SYSTEM
+- name: reject_count_by_asset_last_7
+  question: What are the reject counts by asset for the last week?
+  sql: 'SELECT o.ASSET_ID, SUM(o.REJECT_COUNT) AS total_rejects FROM AEGIS_OEE.SEMANTIC.DT_SHIFT_OEE
+    o WHERE o.SHIFT_DATE >= DATEADD(''day'', -7, CURRENT_DATE()) GROUP BY o.ASSET_ID
+    ORDER BY total_rejects DESC
+
+    '
+  verified_at: 1788105600
+  verified_by: SYSTEM
+- name: quality_rate_by_line
+  question: What is the quality rate by production line for the last 30 days?
+  sql: "SELECT o.LINE_ID,\n       SUM(o.GOOD_COUNT) AS total_good,\n       SUM(o.TOTAL_COUNT)\
+    \ AS total_produced,\n       SUM(o.GOOD_COUNT) / NULLIF(SUM(o.TOTAL_COUNT), 0)\
+    \ AS quality_rate\nFROM AEGIS_OEE.SEMANTIC.DT_SHIFT_OEE o WHERE o.SHIFT_DATE >=\
+    \ DATEADD('day', -30, CURRENT_DATE()) GROUP BY o.LINE_ID ORDER BY o.LINE_ID\n"
+  verified_at: 1788105600
+  verified_by: SYSTEM
+- name: performance_by_line1_assets
+  question: What is the performance rate for LINE_1 assets this week?
+  sql: "SELECT o.ASSET_ID,\n       LEAST(SUM(o.IDEAL_CYCLE_S * o.TOTAL_COUNT) / NULLIF(SUM(o.RUN_MIN)\
+    \ * 60, 0), 1.0) AS performance\nFROM AEGIS_OEE.SEMANTIC.DT_SHIFT_OEE o WHERE\
+    \ o.LINE_ID = 'LINE_1' AND o.SHIFT_DATE >= DATE_TRUNC('week', CURRENT_DATE())\
+    \ GROUP BY o.ASSET_ID ORDER BY performance ASC\n"
+  verified_at: 1788105600
+  verified_by: SYSTEM
+- name: average_oee_by_shift_code
+  question: What is the OEE by shift code (A vs B)?
+  sql: "SELECT o.SHIFT_CODE,\n       (SUM(o.RUN_MIN) / NULLIF(SUM(o.PLANNED_MIN),\
+    \ 0))\n       * LEAST(SUM(o.IDEAL_CYCLE_S * o.TOTAL_COUNT) / NULLIF(SUM(o.RUN_MIN)\
+    \ * 60, 0), 1.0)\n       * (SUM(o.GOOD_COUNT) / NULLIF(SUM(o.TOTAL_COUNT), 0))\
+    \ AS oee\nFROM AEGIS_OEE.SEMANTIC.DT_SHIFT_OEE o GROUP BY o.SHIFT_CODE ORDER BY\
+    \ o.SHIFT_CODE\n"
+  verified_at: 1788105600
+  verified_by: SYSTEM
+- name: downtime_by_failure_mode
+  question: Which failure mode causes the most downtime?
+  sql: 'SELECT d.FAILURE_MODE, SUM(d.MINUTES) AS total_downtime_min, COUNT(*) AS event_count
+    FROM AEGIS_OEE.CORE.DOWNTIME_EVENT d WHERE d.IS_PLANNED = FALSE AND d.FAILURE_MODE
+    IS NOT NULL GROUP BY d.FAILURE_MODE ORDER BY total_downtime_min DESC
+
+    '
+  verified_at: 1788105600
+  verified_by: SYSTEM
+- name: highest_failure_probability_assets
+  question: Which assets have the highest failure probability right now?
+  sql: "SELECT h.ASSET_ID, a.ASSET_TYPE, a.LINE_ID, a.CRITICALITY,\n       h.HEALTH_SCORE,\
+    \ h.FAILURE_PROBABILITY_24H, h.PREDICTED_MODE, h.RISK_LEVEL\nFROM AEGIS_OEE.FEATURES.DT_ASSET_HEALTH\
+    \ h JOIN AEGIS_OEE.CORE.ASSET a ON h.ASSET_ID = a.ASSET_ID ORDER BY h.FAILURE_PROBABILITY_24H\
+    \ DESC LIMIT 5\n"
+  verified_at: 1788105600
+  verified_by: SYSTEM
+- name: open_alerts_by_severity
+  question: How many alerts are open by severity?
+  sql: 'SELECT al.SEVERITY, al.STATUS, COUNT(*) AS alert_count FROM AEGIS_OEE.ACTION.ALERT
+    al WHERE al.STATUS NOT IN (''CLOSED'', ''SUPPRESSED'') GROUP BY al.SEVERITY, al.STATUS
+    ORDER BY al.SEVERITY, al.STATUS
+
+    '
+  verified_at: 1788105600
+  verified_by: SYSTEM
+- name: mtbf_mttr_by_asset_type
+  question: What is the MTBF and MTTR for each asset type?
+  sql: "SELECT m.ASSET_TYPE,\n       AVG(m.MTBF_MIN) AS avg_mtbf_min,\n       AVG(m.MTTR_MIN)\
+    \ AS avg_mttr_min,\n       SUM(m.FAILURE_COUNT) AS total_failures\nFROM AEGIS_OEE.SEMANTIC.V_MTBF_MTTR\
+    \ m GROUP BY m.ASSET_TYPE ORDER BY avg_mtbf_min ASC\n"
+  verified_at: 1788105600
+  verified_by: SYSTEM
+- name: work_orders_by_state
+  question: How many work orders are in each state?
+  sql: 'SELECT w.STATE, COUNT(*) AS wo_count FROM AEGIS_OEE.ACTION.WORK_ORDER w GROUP
+    BY w.STATE ORDER BY wo_count DESC
+
+    '
+  verified_at: 1788105600
+  verified_by: SYSTEM
+- name: estimated_oee_loss_from_alerts
+  question: What is the total estimated OEE loss from current alerts?
+  sql: "SELECT al.ASSET_ID, al.SEVERITY, al.PREDICTED_MODE,\n       al.OEE_IMPACT_EST\
+    \ AS estimated_oee_loss_pct,\n       al.FAILURE_PROBABILITY, al.CONFIDENCE\nFROM\
+    \ AEGIS_OEE.ACTION.ALERT al WHERE al.STATUS NOT IN ('CLOSED', 'SUPPRESSED') ORDER\
+    \ BY al.OEE_IMPACT_EST DESC NULLS LAST\n"
+  verified_at: 1788105600
+  verified_by: SYSTEM

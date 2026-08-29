@@ -57,3 +57,26 @@ View latency is up to ~1 hour; history covers 365 days.
 | email_or_webhook_integration | PASS | No notification integrations found |
 | execute_agent_task_grant | PASS | EXECUTE AGENT TASK on ACCOUNTADMIN |
 | forecast_available | PASS | model created and dropped successfully |
+
+### Mission 01 — Synthetic Factory Data (2026-08-29)
+
+**Objects created/loaded:**
+- **Files**: `sql/01_ref_erp.sql`, `data_gen/failure_profiles.py`, `data_gen/backfill.py`, `data_gen/simulator.py`, `data_gen/__init__.py`, `tests/validation_report.md`, 10 manual excerpts + 30 technician notes in `data_gen/docs/`
+- **Tables**: CORE.ASSET (10), CORE.SHIFT_CALENDAR (150), CORE.PRODUCTION_ORDER (300), CORE.DOWNTIME_EVENT (10), CORE.MAINTENANCE_HISTORY (10), CORE.PARTS_INVENTORY (30), CORE.FAILURE_MODE_PARTS (41), RAW.SENSOR_TELEMETRY (717,862), RAW.PRODUCTION_EVENT (5,922), TEST.GROUND_TRUTH_FAILURES (10), TEST.VALIDATION_RESULTS (15)
+- **Stage**: @AEGIS_OEE.RAW.DOC_STAGE — 40 markdown docs (10 manuals + 30 tech notes)
+- **Stage**: @AEGIS_OEE.RAW.BACKFILL_STAGE — temp staging (can be dropped)
+
+**Parameters**: Seed=42, 75 days (2026-06-15 to 2026-08-28), 10 assets, 10 failure episodes, 5 hard negatives.
+
+**Validation**: 15/15 checks PASS. See `tests/validation_report.md`.
+
+| Check | Result |
+|---|---|
+| Telemetry rows (±2% of 720K) | PASS (717,862 = 99.70%) |
+| GT downtime + maintenance correlated | PASS (10/10) |
+| No overlapping failures | PASS |
+| Label leakage | PASS |
+| OEE invariants (good ≤ total) | PASS |
+| Golden-path shortage (P001) | PASS (on_hand=1, need=2) |
+| Golden-path vib ramp | PASS (2.28→6.55 avg) |
+| Parts mapping completeness | PASS (8/8 combos) |

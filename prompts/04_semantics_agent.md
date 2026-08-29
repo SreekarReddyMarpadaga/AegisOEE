@@ -1,6 +1,6 @@
 # Mission 04 — Semantic Layer, Search, and the RCA Agent
 
-Read `AGENTS.md`. Use `$oee-analytics` for metric definitions and the bundled `$agent-studio` and `$search-optimization` skills. Non-interactive: print `MISSION 04 FAILED: <reason>` on unrecoverable errors.
+Read `AGENTS.md`. Use `$oee-analytics` for metric definitions and the bundled `$agent-studio` skill. Non-interactive: print `MISSION 04 FAILED: <reason>` on unrecoverable errors.
 
 ## Objective
 

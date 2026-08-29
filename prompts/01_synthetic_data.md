@@ -8,11 +8,11 @@ Generate the full AegisOEE dataset: 75 days of correlated telemetry + ERP + main
 
 ## Deliverables
 
-1. `sql/01_ref_erp.sql` — DDL for all CORE/RAW/TEST tables in the AGENTS.md data model (idempotent), executed.
+1. `sql/01_ref_erp.sql` — DDL for all CORE/RAW/TEST tables in the AGENTS.md data model (idempotent), executed. Includes `CORE.SHIFT_CALENDAR` (plant-wide, two 8h shifts A 06:00–14:00 and B 14:00–22:00 IST, 7 days/week; Shift A has 30 min planned downtime, Shift B has 0). Backfill populates the calendar for the full 75-day window.
 2. `data_gen/failure_profiles.py` — the five failure-mode signature generators with parameters matching the physics table in AGENTS.md.
 3. `data_gen/backfill.py` — seeded 75-day backfill ending yesterday 23:59 IST:
    - 10 assets × 1-min telemetry (~1.08M rows) with jitter, gaps, shift structure.
-   - 10 labeled failure episodes total: 3× BEARING_WEAR (one on CNC_01_SPINDLE ~day 60), 2× LUBRICATION_LOSS, 2× COOLING_RESTRICTION, 2× RPM_INSTABILITY, 1× SENSOR_FAULT — each written to `TEST.GROUND_TRUTH_FAILURES` and fully correlated (downtime + corrective maintenance + telemetry reset).
+   - 10 labeled failure episodes total: 3× BEARING_WEAR (one on CNC_01_SPINDLE with degradation starting between day 62 and day 68, failure within the final 7 days — so the golden-path asset is currently at risk or recently failed at demo time), 2× LUBRICATION_LOSS, 2× COOLING_RESTRICTION, 2× RPM_INSTABILITY, 1× SENSOR_FAULT — each written to `TEST.GROUND_TRUTH_FAILURES` and fully correlated (downtime + corrective maintenance + telemetry reset).
    - ≥4 hard-negative episodes (hot-but-healthy, planned RPM changes, planned maintenance, dropouts).
    - Production orders/events consistent with shifts; downtime pauses counts and RPM.
    - Loads via Snowpark or write_pandas in batches; report timing.

@@ -28,8 +28,22 @@ View latency is up to ~1 hour; history covers 365 days.
 
 ## Session log
 
-| Date | Activity | Session/Thread ID |
+| Date | Activity | Objects Created | Session/Thread ID |
+|---|---|---|---|
+| 2026-08-29 | Planning session (`prompts/planning_session.md`) | `docs/adr/ADR-001..005.md`, `docs/risk-register.md`, `docs/acceptance-tests.md` | current session |
+
+### Planning Decisions Log (2026-08-29)
+
+| # | Decision | Applied to |
 |---|---|---|
-| | Planning session (`prompts/planning_session.md`) | |
-| | Missions 00–06 (see `docs/runs/`) | |
-| | Scheduled triage / digest runs | |
+| D1 | Add `CORE.SHIFT_CALENDAR` — plant-wide, 2 shifts (A 06:00–14:00, B 14:00–22:00 IST), 7 days/week, Shift A has 30-min planned maintenance | `AGENTS.md` (data model + shifts + OEE math), `prompts/01_synthetic_data.md` (DDL + backfill) |
+| D2 | Pin golden-path CNC_01_SPINDLE BEARING_WEAR to final 2 weeks (degradation day 62–68, failure within last 7 days) | `prompts/01_synthetic_data.md` |
+| D3 | Remove non-existent `$search-optimization` skill reference | `prompts/04_semantics_agent.md` |
+| D4 | Confirm 3 anomaly models (one per signal family, multi-series by asset_id) | `prompts/03_ml.md` |
+| D5 | Confirm `PURCHASE_REQUISITION.wo_id` is nullable FK | `AGENTS.md` |
+| D6 | OUTBOX is canonical write path; Slack wired at script level; GitHub MCP stays interactive-only; no further integration wiring before missions | No file change (confirms ADR-004) |
+| D7 | Mission 06 attempt-and-fallback for Streamlit runtime, no pre-probe | No file change (confirms ADR-005) |
+| D8 | Skip XGBoost in main pass — anomaly detection + forecast + z-score fallback only | `prompts/03_ml.md` |
+
+| | Missions 00–06 (see `docs/runs/`) | | |
+| | Scheduled triage / digest runs | | |

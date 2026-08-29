@@ -124,3 +124,59 @@ View latency is up to ~1 hour; history covers 365 days.
 
 **Asset health:** All 10 assets scored, range 85–100, all risk_level=LOW (no active degradation at simulation end).
 
+### Mission 03 — Hybrid ML with Provable Accuracy (2026-08-29)
+
+**Objects created/altered:**
+
+| Object | Schema | Type | Notes |
+|---|---|---|---|
+| V_TRAIN_VIB_HEALTHY | ML | View | Healthy vibration training data (pre-2026-07-15, degradation excluded) |
+| V_TRAIN_TEMP_HEALTHY | ML | View | Healthy temperature training data |
+| V_TRAIN_RPM_HEALTHY | ML | View | Healthy RPM training data |
+| AD_VIBRATION | ML | SNOWFLAKE.ML.ANOMALY_DETECTION | Multi-series (10 assets), 5-min grain, ~55K rows |
+| AD_TEMPERATURE | ML | SNOWFLAKE.ML.ANOMALY_DETECTION | Multi-series (10 assets), 5-min grain |
+| AD_RPM | ML | SNOWFLAKE.ML.ANOMALY_DETECTION | Multi-series (10 assets), 5-min grain |
+| DETECT_ANOMALIES | ML | Procedure | Scores last 24h, merges into ANOMALY_EVENTS |
+| DETECT_ANOMALIES_BACKFILL | ML | Procedure | Scores all post-training data |
+| DETECT_ZSCORE_ANOMALIES | ML | Procedure | Z-score persistence fallback (last 24h) |
+| DETECT_ZSCORE_ANOMALIES_BACKFILL | ML | Procedure | Z-score backfill (all history) |
+| TASK_DETECT_ANOMALIES | ML | Task | Every 5 min on AEGIS_WH, RESUMED |
+| V_VIB_HOURLY | ML | View | Hourly vibration aggregation for forecast |
+| V_OEE_DAILY | ML | View | Daily OEE aggregation for forecast |
+| FC_VIBRATION_HOURLY | ML | SNOWFLAKE.ML.FORECAST | 24h vibration forecast per asset |
+| FC_OEE_DAILY | ML | SNOWFLAKE.ML.FORECAST | 7-day OEE forecast per line |
+| SIGNAL_FORECASTS | ML | Table | Stores forecast predictions |
+| DT_ASSET_HEALTH | FEATURES | Dynamic Table (replaced) | v2 with risk fusion (ML + z-score + rules) |
+| ML_METRICS | TEST | Table | Evaluation metrics |
+
+**Files:** `sql/05_ml_models.sql`, `tests/ml_recall_check.sql`
+
+**Training design:** Time-based split at 2026-07-15. Training on healthy-only data from first 30 days (~55K rows/signal at 5-min grain). Degradation periods excluded via NOT EXISTS on TEST.GROUND_TRUTH_FAILURES date ranges. No label leakage.
+
+**ML Metrics:**
+
+| Metric | Value | Notes |
+|---|---|---|
+| ML recall (test period) | 0.80 (4/5) | F009 SENSOR_FAULT correctly not detected |
+| ML recall (real failures) | 1.00 (4/4) | All non-sensor-fault episodes detected |
+| ML median lead time | 96h | Target was ≥24h |
+| Z-score recall (all) | 0.70 (7/10) | Missed F007, F008 (RPM_INSTABILITY), F009 |
+| Combined recall | 0.80 (8/10) | ML + z-score union |
+| Combined recall (excl sensor fault) | 0.89 (8/9) | Excluding F009 |
+| Combined median lead time | 84h | |
+| Baseline recall (z>2.0) | 0.90 | Higher recall but much higher false positive rate |
+| Golden path F010 lead time | **168h** | Target ≥48h — PASS |
+| False alerts/asset-day | 23.6 | Window-level (would aggregate before alerting) |
+
+**Per-mode recall (combined):**
+
+| Mode | Recall | Notes |
+|---|---|---|
+| BEARING_WEAR | 1.00 (3/3) | Strong detection |
+| LUBRICATION_LOSS | 1.00 (2/2) | |
+| COOLING_RESTRICTION | 1.00 (2/2) | |
+| RPM_INSTABILITY | 0.50 (1/2) | Missed F007 (short 3-day window, low-criticality asset) |
+| SENSOR_FAULT | 0.00 (0/1) | Correctly not flagged |
+
+**Tuning notes:** RPM_INSTABILITY on conveyor gearboxes has subtle signature that neither ML nor z-score persistence catches reliably for short degradation windows. The baseline (z>2.0, no persistence) catches it but with many more false positives. Acceptable trade-off for production use.
+

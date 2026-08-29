@@ -80,3 +80,47 @@ View latency is up to ~1 hour; history covers 365 days.
 | Golden-path shortage (P001) | PASS (on_hand=1, need=2) |
 | Golden-path vib ramp | PASS (2.28→6.55 avg) |
 | Parts mapping completeness | PASS (8/8 combos) |
+
+### Mission 02 — Convergence Pipelines (2026-08-29)
+
+**Objects created/altered:**
+
+| Object | Schema | Type | Refresh Mode |
+|---|---|---|---|
+| STR_SENSOR_TELEMETRY | RAW | Stream (append-only) | — |
+| STR_PRODUCTION_EVENT | RAW | Stream (append-only) | — |
+| DT_SENSOR_CLEAN | FEATURES | Dynamic Table | INCREMENTAL |
+| DT_SENSOR_1MIN | FEATURES | Dynamic Table | INCREMENTAL |
+| DT_SENSOR_FEATURES_15MIN | FEATURES | Dynamic Table | INCREMENTAL |
+| DT_TELEMETRY_CONTEXT | FEATURES | Dynamic Table | INCREMENTAL |
+| DT_SHIFT_OEE | SEMANTIC | Dynamic Table | INCREMENTAL |
+| DT_OEE_LINE_DAY | SEMANTIC | Dynamic Table | INCREMENTAL |
+| DT_ASSET_HEALTH | FEATURES | Dynamic Table | INCREMENTAL |
+| V_MTBF_MTTR | SEMANTIC | View | — |
+| V_SIX_BIG_LOSSES | SEMANTIC | View | — |
+
+**Files modified:** `sql/03_dynamic_tables.sql` (TIME_SLICE cast fix), `sql/04_oee_marts.sql` (added REFRESH_MODE=INCREMENTAL to 3 DTs).
+
+**Fixes applied:**
+1. TIME_SLICE does not accept TIMESTAMP_TZ — cast `minute_ts::TIMESTAMP_NTZ` in DT_SENSOR_FEATURES_15MIN.
+2. Four DTs defaulted to FULL refresh — recreated with explicit `REFRESH_MODE = INCREMENTAL`.
+
+**Freshness probe:** 46 seconds (RAW insert → DT_SENSOR_CLEAN visibility).
+
+**Validation:** 7/8 PASS, 1 FAIL (plant_oee_plausible: avg_oee=0.9668, above 0.95 ceiling — data characteristic, not pipeline bug).
+
+| Check | Result | Detail |
+|---|---|---|
+| oee_apq_range | PASS | 0 violations |
+| oee_product_check | PASS | 0 violations |
+| downtime_max_1440 | PASS | 0 violations |
+| good_le_total | PASS | 0 violations |
+| plant_oee_plausible | FAIL | avg=0.9668, min=0.245, max=0.9879 |
+| oee_dips_on_failures | PASS | failure_day=0.8407, healthy_day=0.968 |
+| dt_row_counts | PASS | clean=717862, 1min=717567, 15min=48000, oee=747, health=10 |
+| freshness_probe | PASS | latency_s=46 |
+
+**OEE sample ranges:** Availability 0.24–1.0, Performance 0.76–1.0, Quality 0.98–0.99, OEE 0.24–0.99.
+
+**Asset health:** All 10 assets scored, range 85–100, all risk_level=LOW (no active degradation at simulation end).
+

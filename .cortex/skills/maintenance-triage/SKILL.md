@@ -46,8 +46,9 @@ One open alert per (asset_id, predicted_mode). On re-detection, update evidence 
 
 ## Propose vs create (hard guardrail)
 
-- `PROPOSE_WORK_ORDER(alert_id)` → returns draft JSON (title, priority, recommended action, parts, planned window, evidence). **Zero side effects.**
-- `CREATE_WORK_ORDER(alert_id, approver, dry_run)` → requires alert in ACKED state, non-null approver ≠ 'AGENT', no duplicate open WO; `dry_run` defaults TRUE and must be explicitly FALSE to write. Writes WO + audit row.
+- `PROPOSE_WORK_ORDER(alert_id)` → returns draft JSON (title, priority, recommended action, parts, planned window, evidence). **Zero side effects** (exception: the embedded parts check may insert PURCHASE_REQUISITION rows — procurement paperwork, not maintenance action).
+- Parts check: resolve kit from FAILURE_MODE_PARTS → compare qty_required vs (on_hand − reserved) → shortages create a PURCHASE_REQUISITION (quote = qty × unit_cost, supplier, lead time, AI-drafted RFQ). The draft's planned window must account for the longest shortage lead time.
+- `CREATE_WORK_ORDER(alert_id, approver, dry_run)` → requires alert in ACKED state, non-null approver ≠ 'AGENT', no duplicate open WO; `dry_run` defaults TRUE and must be explicitly FALSE to write. Writes WO + audit, reserves available parts, links requisitions.
 - Every proposal, approval, rejection, sync attempt → append to the audit table. The agent never calls CREATE with dry_run=FALSE on its own initiative.
 
 ## Notification & ticketing
@@ -58,7 +59,7 @@ One open alert per (asset_id, predicted_mode). On re-detection, update evidence 
 
 ## Work-order draft template
 
-Title, Asset (id, line, criticality), Most likely failure mode + confidence, Evidence summary (3–5 timestamped bullets), Operational impact (OEE component + estimate), Recommended action (inspection/part/urgency/window), Alternatives considered, Safety statement ("requires human verification before execution"), Trace (alert id, model version, source objects).
+Title, Asset (id, line, criticality), Most likely failure mode + confidence, Evidence summary (3–5 timestamped bullets), Operational impact (OEE component + estimate), Recommended action (inspection/part/urgency/window), **Parts required (per item: qty, on-hand, shortage, requisition + quote + lead time if short)**, Alternatives considered, Safety statement ("requires human verification before execution"), Trace (alert id, model version, source objects).
 
 # Examples
 

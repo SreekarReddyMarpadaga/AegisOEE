@@ -18,7 +18,7 @@ Build the declarative IT/OT convergence layer: streams, layered Dynamic Tables, 
    - `SEMANTIC.DT_OEE_LINE_DAY`, MTBF/MTTR view, six-big-losses waterfall view.
    - `FEATURES.DT_ASSET_HEALTH` v1 (rule-based health score + placeholders for ML columns filled by Mission 03).
 4. TEST checks executed and stored: refresh_mode INCREMENTAL for every DT (report any FULL and fix), OEE invariants pass, raw→mart freshness measured by inserting a probe row and timing visibility (< 120s).
-5. Append run record + freshness/refresh evidence to `docs/coco-evidence.md` ("Development").
+5. Append run record + freshness/refresh results to `docs/run-records.md`.
 
 ## Acceptance criteria
 

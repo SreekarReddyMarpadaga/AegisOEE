@@ -21,7 +21,7 @@ Provision the AegisOEE Snowflake foundation and record environment capabilities.
    - `coco_usage_view`: SELECT count from `SNOWFLAKE.ACCOUNT_USAGE.SNOWFLAKE_COCO_USAGE_HISTORY` (FAIL only on permission error; 0 rows is PASS).
    - `email_or_webhook_integration`: SHOW NOTIFICATION INTEGRATIONS — record what exists.
 3. Print a probe summary table in the response.
-4. Append a run record (mission, date, objects created, probe summary) to `docs/coco-evidence.md` under "Development".
+4. Append a run record (mission, date, objects created, probe summary) to `docs/run-records.md`.
 
 ## Acceptance criteria
 

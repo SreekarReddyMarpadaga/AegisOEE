@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Snapshots CoCo usage records into docs/evidence/.
+# Snapshots CoCo usage records into docs/runs/.
 set -u
 CONN="${COCO_CONN:-aegis}"
-OUT="docs/evidence"
-mkdir -p "$OUT/raw"
+OUT="docs/runs"
+mkdir -p "$OUT"
 STAMP="$(date +%Y%m%d_%H%M%S)"
 
 {
@@ -16,9 +16,9 @@ STAMP="$(date +%Y%m%d_%H%M%S)"
   cortex mcp list 2>/dev/null || true
   echo; echo "## Skills"
   cortex skill list 2>/dev/null || true
-} > "$OUT/raw/cli_snapshot_$STAMP.md"
+} > "$OUT/cli_snapshot_$STAMP.md"
 
 cortex -c "$CONN" --bypass -p "Query SNOWFLAKE.ACCOUNT_USAGE.SNOWFLAKE_COCO_USAGE_HISTORY: total requests, total TOKEN_CREDITS, grouped by INTERFACE, last 30 days. Also last 7 days daily trend. Print as two markdown tables only." \
-  > "$OUT/raw/coco_usage_$STAMP.md" 2>&1 || true
+  > "$OUT/coco_usage_$STAMP.md" 2>&1 || true
 
-echo "Snapshots written to $OUT/raw/ — link the relevant ones from docs/coco-evidence.md"
+echo "Snapshots written to $OUT/ — note relevant session IDs in docs/run-records.md"

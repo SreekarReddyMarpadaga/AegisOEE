@@ -3,7 +3,7 @@
 set -u
 CONN="${COCO_CONN:-aegis}"
 MODEL="${COCO_MODEL:-auto}"
-LOG_DIR="docs/evidence/raw"
+LOG_DIR="docs/runs"
 mkdir -p "$LOG_DIR"
 
 MISSIONS=(
@@ -29,6 +29,6 @@ for m in "${MISSIONS[@]}"; do
   fi
 done
 
-echo "==> All missions complete. Capturing evidence snapshot..."
-bash scripts/capture_evidence.sh || true
+echo "==> All missions complete. Capturing usage snapshot..."
+bash scripts/snapshot_usage.sh || true
 echo "BUILD COMPLETE"

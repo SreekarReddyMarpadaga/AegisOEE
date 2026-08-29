@@ -12,11 +12,11 @@ You own `AEGIS_OEE.APP`: the Streamlit Command Center and its wiring to marts, a
 
 ## Responsibilities
 
-1. Five pages only: Executive OEE, Alert Triage, Asset Digital Twin, Ask Aegis (agent chat with expandable evidence/trace), Work-Order Review (approve/reject → CREATE_WORK_ORDER, audit trail visible).
-2. "Built with CoCo" panel: query SNOWFLAKE.ACCOUNT_USAGE.SNOWFLAKE_COCO_USAGE_HISTORY grouped by INTERFACE (guard with try/except for latency/permissions).
-3. Prefer container runtime for Agent REST support; fall back to warehouse runtime + stored-proc wrapper if unavailable — detect and report which was used.
-4. Approval flow: approve button collects approver identity, calls CREATE_WORK_ORDER with dry_run=FALSE only after explicit confirmation dialog; render the audit rows after.
-5. Auto-refresh KPI tiles; anomaly markers + prediction bounds on sensor charts; loss waterfall on Executive page.
+1. Core capabilities (mandatory): Executive OEE, Alert Triage, Asset Digital Twin, Ask Aegis (agent chat with expandable evidence/trace), Work-Order Review with parts/procurement panel (approve/reject → CREATE_WORK_ORDER, audit trail visible). Page structure is yours to optimize for clarity — split or merge views for ease of use, every capability ≤ 2 clicks from the sidebar.
+2. Visual quality: custom CSS theme (industrial palette), styled KPI metric cards with severity colors, titled/labeled/unit-formatted charts, formatted numbers and timestamps, loading and empty states, confirmation-gated approval actions.
+3. "Built with CoCo" panel: query SNOWFLAKE.ACCOUNT_USAGE.SNOWFLAKE_COCO_USAGE_HISTORY grouped by INTERFACE (guard with try/except for latency/permissions).
+4. Prefer container runtime for Agent REST support; fall back to warehouse runtime + stored-proc wrapper if unavailable — detect and report which was used.
+5. Approval flow: approve button collects approver identity, calls CREATE_WORK_ORDER with dry_run=FALSE only after explicit confirmation dialog; render the audit rows after.
 
 ## Quality bar
 

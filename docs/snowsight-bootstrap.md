@@ -120,9 +120,10 @@ model version). Causes are "most likely", never proven.
 5 Action loop: 5-min alert task w/ scoring+dedup; approval-gated CREATE_WORK_ORDER;
   notification (Slack webhook or outbox table fallback); guardrail tests (non-ACKED
   rejected, approver 'AGENT' rejected, duplicate rejected, dry-run writes nothing).
-6 Streamlit Command Center, 5 pages: Executive OEE (KPIs, loss waterfall, OEE-at-risk),
-  Alert Triage, Asset Digital Twin (trends + anomaly markers + forecast bands), Ask Aegis
-  (agent chat with trace), Work-Order Review (approve/reject + audit). Plus a
+6 Streamlit Command Center \u2014 core views (structure pages for clarity, polished styled UI): Executive OEE
+  (KPIs, loss waterfall, OEE-at-risk), Alert Triage, Asset Digital Twin (trends + anomaly markers +
+  forecast bands), Ask Aegis (agent chat with trace), Work-Order Review (approve/reject + audit +
+  parts availability/requisitions). Plus a
   "Built with CoCo" panel: SELECT interface, COUNT(*), SUM(token_credits) FROM
   SNOWFLAKE.ACCOUNT_USAGE.SNOWFLAKE_COCO_USAGE_HISTORY GROUP BY interface.
 

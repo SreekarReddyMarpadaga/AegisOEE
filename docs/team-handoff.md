@@ -1,6 +1,6 @@
 # AegisOEE — Team Handoff & AI-Session Bootstrap
 
-**For teammates joining the build.** This file turns any fresh AI coding session (CoCo CLI, CoCo Desktop, or CoCo in Snowsight) into a fully briefed collaborator. It complements (never replaces) the three canonical files: `docs/plan.md` (status + runbook), `AGENTS.md` (data model + conventions + guardrails), `docs/coco-evidence.md` (reviewer evidence guide).
+**For teammates joining the build.** This file turns any fresh AI coding session (CoCo CLI, CoCo Desktop, or CoCo in Snowsight) into a fully briefed collaborator. It complements (never replaces) the three canonical files: `docs/plan.md` (status + runbook), `AGENTS.md` (data model + conventions + guardrails), `docs/run-records.md` (logs + usage reference).
 
 ---
 
@@ -17,13 +17,13 @@
 You are joining the AegisOEE project mid-build. Before anything else, read these
 files in order and treat them as your memory: docs/plan.md (single source of truth for
 status + runbook), AGENTS.md (canonical data model, naming, physics, guardrails),
-docs/coco-evidence.md (evidence ledger), docs/team-handoff.md (this workflow + environment
+docs/run-records.md (logs + usage reference), docs/team-handoff.md (this workflow + environment
 gotchas). Then:
 1. Report the current status table from docs/plan.md and identify the next open step.
 2. Follow the Working Agreements and Locked Decisions in docs/team-handoff.md exactly.
 3. Never invent new object/database names — AGENTS.md is authoritative (DB AEGIS_OEE).
-4. When you complete work: update the docs/plan.md status table, append evidence rows to
-   docs/coco-evidence.md, and commit with the mission/step and CoCo thread ID in the message.
+4. When you complete work: update the docs/plan.md status table, append run records to
+   docs/run-records.md, and commit with the mission/step and CoCo thread ID in the message.
 Confirm you have read all four files and state the next open step before doing any work.
 ```
 
@@ -38,7 +38,7 @@ Confirm you have read all four files and state the next open step before doing a
 
 1. **One Snowflake writer at a time.** All missions mutate the shared `AEGIS_OEE` database — coordinate in chat before running any mission (00–06) or task/alert changes. Prompt/skill/app-code work is parallel-safe on branches.
 2. Branch per member; PR back to main; the best variant wins on evidence (test results, eval scores), recorded in plan.md Key decisions.
-3. After every mission run: verify completion line, review generated files, update plan.md status, append to coco-evidence.md, commit with thread ID (`cortex conversations list`).
+3. After every mission run: verify completion line, review generated files, update plan.md status, append to run-records.md, commit with thread ID (`cortex conversations list`).
 4. Never commit secrets (PATs, webhooks, connections.toml). The sql-guard hook (.cortex/hooks/) stays enabled — its log is part of the project record.
 5. Improvements welcome anywhere EXCEPT: golden-path reliability, OEE reconciliation invariants, approval guardrail, agent evaluation, 3 skills, evidence records. Those are core to the solution and only get *strengthened*.
 
@@ -57,7 +57,7 @@ Confirm you have read all four files and state the next open step before doing a
 
 ## Repo map (30 seconds)
 
-`prompts/00–06` missions build everything (foundation → data → pipelines → ML → semantics/agent → action loop → app); `prompts/triage-automation.md` + `daily-oee-digest.md` are unattended automation prompts; `.cortex/` holds the 3 reusable skills, 4 subagents, sql-guard hook; `scripts/` is the harness (`preflight_probes`, `build_all`, `inject_anomaly`, `demo_reset`, `capture_evidence`, `with_automations`); generated artifacts land in `sql/`, `data_gen/`, `ml/`, `semantic/`, `app/`, `tests/` and are committed for review + re-run.
+`prompts/00–06` missions build everything (foundation → data → pipelines → ML → semantics/agent → action loop → app); `prompts/triage-automation.md` + `daily-oee-digest.md` are unattended automation prompts; `.cortex/` holds the 3 reusable skills, 4 subagents, sql-guard hook; `scripts/` is the harness (`preflight_probes`, `build_all`, `inject_anomaly`, `demo_reset`, `snapshot_usage`, `with_automations`); generated artifacts land in `sql/`, `data_gen/`, `ml/`, `semantic/`, `app/`, `tests/` and are committed for review + re-run.
 
 ## Merge protocol (end-state)
 

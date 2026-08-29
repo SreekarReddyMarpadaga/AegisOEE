@@ -12,13 +12,14 @@ The closed loop: scored alerts with dedup + confidence gating, human-approval wo
    - ACTION tables per AGENTS.md: `ALERT`, `WORK_ORDER`, `WORK_ORDER_OUTBOX`, `ACTION_AUDIT` (audit append-only: no UPDATE/DELETE grants).
    - `TASK_SCORE_ALERTS` every 5 min on `AEGIS_WH`: reads DT_ASSET_HEALTH + ML.ANOMALY_EVENTS, applies PRIORITY_SCORE + CONFIDENCE formulas, dedup rule (one open alert per asset+mode → update evidence), inserts/updates `ACTION.ALERT`. Create SUSPENDED; resume after tests pass.
 2. `sql/10_action_procs.sql` — executed:
-   - `ACTION.CREATE_WORK_ORDER(alert_id, approver, dry_run DEFAULT TRUE)` — enforces: alert exists and status='ACKED'; approver NOT IN (NULL,'','AGENT'); no duplicate open WO for (asset, mode); dry_run=TRUE returns preview only. Writes WO + audit; sets alert→TRIAGED history in audit.
+   - `ACTION.CREATE_WORK_ORDER(alert_id, approver, dry_run DEFAULT TRUE)` — enforces: alert exists and status='ACKED'; approver NOT IN (NULL,'','AGENT'); no duplicate open WO for (asset, mode); dry_run=TRUE returns preview only. Writes WO + audit; sets alert→TRIAGED history in audit. **Non-dry-run also reserves available parts (PARTS_INVENTORY.reserved_qty += allocated) and links any open requisitions for the WO.**
+   - `ACTION.CHECK_PARTS(alert_id)` — resolves the parts kit via FAILURE_MODE_PARTS for the alert's (predicted_mode, asset_type); for each part computes available = on_hand_qty − reserved_qty vs qty_required; returns availability JSON. For every shortage, inserts an `ACTION.PURCHASE_REQUISITION` row: quote = shortage_qty × unit_cost, supplier, lead_time_days, plus an RFQ email text drafted with AI_COMPLETE (professional tone, part spec, qty, requested delivery date). Called automatically inside PROPOSE_WORK_ORDER so every draft carries a parts panel; audit row 'PARTS_CHECKED'.
    - `ACTION.NOTIFY_SLACK(payload)` — external access integration + secret for `SLACK_WEBHOOK_URL` if permitted; else write to OUTBOX with target='SLACK'. Wrap so failures always land in OUTBOX.
-   - `ACTION.QUEUE_GITHUB_SYNC(wo_id)` — builds the GitHub issue payload per the triage skill template into OUTBOX target='GITHUB' (the MCP leg is executed by the triage automation/CLI, not by SQL).
+   - `ACTION.QUEUE_GITHUB_SYNC(wo_id)` — builds the GitHub issue payload per the triage skill template into OUTBOX target='GITHUB' (the MCP leg is executed by the triage automation/CLI, not by SQL). **Issue body includes the parts availability table and any requisition quotes.**
    - `TASK_OUTBOX_RETRY` every 10 min: increments attempts, retries Slack deliveries, marks dead after 5 attempts.
 3. Wire post-approval flow: successful non-dry-run CREATE_WORK_ORDER → QUEUE_GITHUB_SYNC + NOTIFY_SLACK automatically (proc call or triggered task).
-4. Guardrail tests executed and persisted to `TEST.ACTION_GUARDRAIL_RESULTS`: create on non-ACKED alert rejected; approver='AGENT' rejected; duplicate WO rejected; dry-run writes nothing; audit rows appear for every attempt.
-5. Append run record to `docs/coco-evidence.md` ("Development" + "Testing").
+4. Guardrail tests executed and persisted to `TEST.ACTION_GUARDRAIL_RESULTS`: create on non-ACKED alert rejected; approver='AGENT' rejected; duplicate WO rejected; dry-run writes nothing; audit rows appear for every attempt; **parts flow: golden-path alert produces a shortage requisition with a non-zero quote; a fully-stocked part produces no requisition; approval reserves exactly qty_required**.
+5. Append run record to `docs/run-records.md`.
 
 ## Acceptance criteria
 

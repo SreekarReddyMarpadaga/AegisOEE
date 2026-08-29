@@ -20,7 +20,7 @@ Natural-language layer: semantic view for Cortex Analyst, Cortex Search over mai
    - `ACTION.PROPOSE_WORK_ORDER(alert_id)` — returns draft JSON only, zero side effects, audit row 'PROPOSED'.
 4. Cortex Agent `AEGIS_RCA_AGENT` (via agent-studio): tools = Cortex Analyst (semantic view), Cortex Search (MAINTENANCE_SEARCH), GET_ASSET_EVIDENCE, PROPOSE_WORK_ORDER. Instructions enforce the response structure (Assessment/Evidence/Impact/Alternatives/Recommendation/Safety/Trace), the confidence gate, "most likely cause" phrasing, and NEVER approving work. Deploy so it is visible in Snowflake Intelligence (multi-surface evidence).
 5. `tests/analyst_eval.md` — 25 evaluation questions (factual, causal, tool-routing, refusal, missing-data) each with expected grounding; run them, score pass/fail, persist to `TEST.AGENT_EVAL_RESULTS`.
-6. Append run record + eval scores to `docs/coco-evidence.md` ("Development" + "Testing").
+6. Append run record + eval scores to `docs/run-records.md`.
 
 ## Acceptance criteria
 

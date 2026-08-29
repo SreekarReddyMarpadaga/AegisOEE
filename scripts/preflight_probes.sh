@@ -36,5 +36,5 @@ say "hint: if 'automations CLI' FAILed, run 'cortex update' once and re-check; f
 
 say ""
 say "== Summary: $PASS pass, $FAIL fail =="
-say "Evidence tip: run 'cortex conversations list' and record today's thread IDs in docs/coco-evidence.md"
+say "Tip: run 'cortex conversations list' and note today's session IDs in docs/run-records.md"
 exit "$([ "$FAIL" -eq 0 ] && echo 0 || echo 1)"

@@ -8,7 +8,7 @@ You are building **AegisOEE**, a closed-loop predictive-maintenance and OEE deci
 2. Write every generated artifact to the repo (`sql/`, `data_gen/`, `ml/`, `semantic/`, `app/`, `tests/`) **before** executing it, so runs are reviewable and repeatable.
 3. Never ask interactive questions in `exec` missions. If a prerequisite is missing, print `MISSION <NN> FAILED: <reason>` and stop.
 4. End every successful mission with the exact line `MISSION <NN> COMPLETE`.
-5. Append a run record (date, mission, session id if known, objects created) to `docs/coco-evidence.md` under the matching phase section.
+5. Append a run record (date, mission, session id if known, objects created) to `docs/run-records.md`.
 
 ## Snowflake environment
 
@@ -53,6 +53,9 @@ Shifts: A 06:00–14:00, B 14:00–22:00, C 22:00–06:00 IST. Planned productio
 | `CORE.DOWNTIME_EVENT` | event_id PK, asset_id, start_ts, end_ts, is_planned, reason_code, failure_mode, minutes |
 | `CORE.MAINTENANCE_HISTORY` | wo_hist_id PK, asset_id, completed_ts, failure_code, finding, action_taken, parts_used, labor_hours, technician_note (free text) |
 | `TEST.GROUND_TRUTH_FAILURES` | failure_id PK, asset_id, failure_mode, degradation_start_ts, failure_ts, severity — supervised labels, **never** an ML input |
+| `CORE.PARTS_INVENTORY` | part_id PK, part_name, category, on_hand_qty, reserved_qty, reorder_point, unit_cost, supplier_name, lead_time_days, bin_location |
+| `CORE.FAILURE_MODE_PARTS` | failure_mode, asset_type, part_id FK, qty_required — maps each failure mode per asset type to its repair parts kit |
+| `ACTION.PURCHASE_REQUISITION` | req_id PK, wo_id FK, part_id FK, qty, est_unit_cost, est_total, supplier_name, lead_time_days, rfq_text, status ('PENDING_QUOTE','QUOTED','ORDERED','RECEIVED','CANCELLED'), created_ts |
 | `FEATURES.DT_SENSOR_1MIN` | asset_id, minute_ts + per-sensor mean/max/stddev |
 | `FEATURES.DT_SENSOR_FEATURES_15MIN` | asset_id, window_ts + rolling mean/max/stddev/slope, kurtosis, temp-to-load residual, rpm variance, baseline z-scores |
 | `FEATURES.DT_ASSET_HEALTH` | asset_id (current) — health_score 0–100, anomaly_distance, failure_probability_24h, predicted_mode, risk_level |
@@ -89,6 +92,7 @@ Every ground-truth failure must have: matching `CORE.DOWNTIME_EVENT` (unplanned,
 - CONFIDENCE = model_confidence × data_quality × evidence_agreement × persistence; below 0.5 → status stays `NEW` labeled "observe", no work-order proposal
 - Dedup: one open alert per (asset_id, predicted_mode); refresh evidence instead of inserting duplicates
 - The agent may call `PROPOSE_WORK_ORDER` (returns a draft, zero side effects). Only `CREATE_WORK_ORDER` writes, and it requires approver identity + open alert in `ACKED` state + no duplicate open WO; `DRY_RUN` defaults TRUE. Every proposal/approval/rejection/sync lands in `ACTION.ACTION_AUDIT`.
+- **Parts check (MRO)**: every work-order draft resolves its parts kit via `FAILURE_MODE_PARTS`, compares against `PARTS_INVENTORY` (on_hand − reserved). Shortages auto-create `PURCHASE_REQUISITION` rows with a computed quote (qty × unit_cost, supplier, lead time) and an AI-drafted RFQ text. Approving a WO reserves available parts (increments reserved_qty) and links open requisitions; parts lead time extends the WO's planned window and is shown to the approver.
 - RCA answers always use the structure: Assessment / Evidence / Operational impact / Alternatives considered / Recommended action / Safety statement / Trace. Causes are "most likely", never proven.
 
 ## Skills in this repo

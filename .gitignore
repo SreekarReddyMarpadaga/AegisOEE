@@ -9,7 +9,7 @@ tmp/
 logs/
 *.log
 .cortex/hooks/tool-log.jsonl
-docs/evidence/raw/
+docs/runs/
 .streamlit/secrets.toml
 connections.toml
 *.pem

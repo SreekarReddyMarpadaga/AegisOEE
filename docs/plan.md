@@ -1,6 +1,6 @@
 # AegisOEE — Build Plan & Status (single source of truth)
 
-> **For AI assistants (CoCo) resuming work**: read this file, `AGENTS.md` (conventions/data model/guardrails), `docs/coco-evidence.md` (evidence guide), and `docs/team-handoff.md` (team workflow + environment gotchas), then continue from **Current Status** below. Update the status table as work completes — this file replaces any chat-session memory.
+> **For AI assistants (CoCo) resuming work**: read this file, `AGENTS.md` (conventions/data model/guardrails), `docs/run-records.md` (logs + usage reference), and `docs/team-handoff.md` (team workflow + environment gotchas), then continue from **Current Status** below. Update the status table as work completes — this file replaces any chat-session memory.
 
 ## Product
 
@@ -24,7 +24,7 @@ Target: working prototype by **Sept 1, 2026**. CoCo is used across planning, dev
 | 4 | Mission 03 ML (recall ≥0.8, lead ≥24h vs ground truth) | ⬜ TODO | after step 3 |
 | 5 | Mission 04 semantics + RCA agent (eval ≥80%) | ⬜ TODO | after step 4 |
 | 6 | Mission 05 action loop (guardrail tests pass) | ⬜ TODO | after step 5 |
-| 7 | Mission 06 Streamlit 5 pages + CoCo panel | ⬜ TODO | after step 6 |
+| 7 | Mission 06 Streamlit Command Center + CoCo panel | ⬜ TODO | after step 6 |
 | 8 | Automations pm_triage + oee_digest (or Tasks fallback) | ⬜ TODO | with step 7 |
 | 9 | Publish + share 3 skills (snow:// links), request certification | ⬜ TODO | after core build |
 | 10 | QA swarm, fresh-clone rebuild, edge cases, evidence compile | ⬜ TODO | after step 9 |
@@ -56,8 +56,8 @@ cortex mcp add github https://api.githubcopilot.com/mcp/ --type http -H "Authori
 # §4 execute
 bash scripts/preflight_probes.sh
 cortex --plan -c aegis                             # run prompts/planning_session.md → log thread ID
-cortex exec --file prompts/00_foundation.md -c aegis 2>&1 | tee docs/evidence/raw/mission_00.log
-cortex exec --file prompts/01_synthetic_data.md -c aegis 2>&1 | tee docs/evidence/raw/mission_01.log
+cortex exec --file prompts/00_foundation.md -c aegis --bypass 2>&1 | tee docs/runs/mission_00.log
+cortex exec --file prompts/01_synthetic_data.md -c aegis --bypass 2>&1 | tee docs/runs/mission_01.log
 # ... then missions 02–06 in order (or scripts/build_all.sh once 00–01 verified)
 ```
 

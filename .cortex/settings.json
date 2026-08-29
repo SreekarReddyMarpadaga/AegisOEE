@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|.*[Ss][Qq][Ll].*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .cortex/hooks/sql-guard.sh",
+            "timeout": 30,
+            "enabled": true
+          }
+        ]
+      }
+    ]
+  }
+}

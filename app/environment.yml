@@ -1,0 +1,7 @@
+name: aegis-oee
+channels:
+  - snowflake
+dependencies:
+  - pandas
+  - altair
+  - plotly

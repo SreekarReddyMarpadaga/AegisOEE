@@ -1,0 +1,21 @@
+definition_version: 2
+entities:
+  aegis_oee_app:
+    type: streamlit
+    identifier:
+      name: AEGIS_OEE_COMMAND_CENTER
+      database: AEGIS_OEE
+      schema: APP
+    query_warehouse: AEGIS_APP_WH
+    main_file: Home.py
+    pages_dir: pages
+    artifacts:
+      - Home.py
+      - utils.py
+      - environment.yml
+      - pages/1_Executive_OEE.py
+      - pages/2_Alert_Triage.py
+      - pages/3_Asset_Digital_Twin.py
+      - pages/4_Ask_Aegis.py
+      - pages/5_Work_Order_Review.py
+      - pages/6_Asset_Map.py

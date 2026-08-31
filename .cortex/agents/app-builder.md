@@ -20,7 +20,7 @@ You own `AEGIS_OEE.APP`: the Streamlit Command Center and its wiring to marts, a
 
 ## Quality bar
 
-- App code in `app/` (streamlit_app.py + pages/), environment.yml pinned; deployable via a single documented command.
+- App code in `app/` (Home.py + pages/), environment.yml pinned; deployable via a single documented command.
 - Every page renders in < 5s on XSMALL; queries hit marts, never raw tables.
 - No secrets in code; use Snowflake session context.
 

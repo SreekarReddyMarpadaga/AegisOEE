@@ -31,6 +31,7 @@ View latency is up to ~1 hour; history covers 365 days.
 | Date | Activity | Objects Created | Session/Thread ID |
 |---|---|---|---|
 | 2026-08-29 | Planning session (`prompts/planning_session.md`, 21m) | `docs/adr/ADR-001..005.md`, `docs/risk-register.md`, `docs/acceptance-tests.md` | `731c0df1-28de-4cdd-a68c-1c7d7c5c6d63` |
+| 2026-08-31 | App build + iterations (interactive): procurement tab, asset map, twin filters, outbox dispatcher, GitHub closure sync | `APP.AEGIS_OEE_COMMAND_CENTER`, `app/` sources, `scripts/` dispatcher, WO status model | `bf9a74da-2857-4a68-bb0b-6d2e91640fb9` |
 
 ### Planning Decisions Log (2026-08-29)
 
@@ -283,3 +284,41 @@ Key findings:
 | shortage_creates_requisition | PASS | P001 requisition with est_total=$1250 |
 | no_requisition_when_stocked | PASS | P002/P003 (fully stocked) — 0 requisitions |
 | approval_reserves_parts | PASS | P001 reserved=1, P002 reserved=3, P003 reserved=2 |
+
+### Mission 06 — AegisOEE Streamlit Command Center (2026-08-29)
+
+**Objects created:**
+
+| Object | Schema | Type | Notes |
+|---|---|---|---|
+| AEGIS_OEE_COMMAND_CENTER | APP | Streamlit | Multi-page app, warehouse runtime, AEGIS_APP_WH |
+| GRANT USAGE TO PUBLIC | APP | Grant | Public access enabled |
+
+**Files created:**
+
+- `app/utils.py` — Shared utilities (theme CSS, KPI cards, connection helpers, audit writer)
+- `app/streamlit_app.py` — Main entry: page config, header, quick KPIs, navigation cards, recent alerts
+- `app/pages/1_Executive_OEE.py` — OEE trends, line comparison, six-big-losses, OEE-at-risk
+- `app/pages/2_Alert_Triage.py` — Ranked alerts with acknowledge/investigate/suppress actions
+- `app/pages/3_Asset_Digital_Twin.py` — Health gauge, sensor trends with anomaly markers + forecast bands + thresholds, maintenance history, anomaly drivers
+- `app/pages/4_Ask_Aegis.py` — Chat interface to AEGIS_RCA_AGENT with evidence/trace expander, CORTEX.COMPLETE fallback
+- `app/pages/5_Work_Order_Review.py` — 3 tabs: Pending Drafts (parts panel + procurement + approve/reject), Active WOs (outbox sync status), Audit History
+- `app/snowflake.yml` — Deployment config
+- `app/environment.yml` — Conda env documentation
+
+**Runtime:** Warehouse (standard SiS, AEGIS_APP_WH). Container runtime not specified in final deploy — using default warehouse runtime.
+
+**Deployment URL:** https://app.snowflake.com/LLILQWV/wt32121/#/streamlit-apps/AEGIS_OEE.APP.AEGIS_OEE_COMMAND_CENTER
+
+**Page-by-page checklist:**
+
+| Page | Features | Status |
+|---|---|---|
+| Home (streamlit_app.py) | Page config, industrial CSS theme, KPI overview (plant OEE, active alerts, open WOs), nav cards, recent alerts, "Built with CoCo" sidebar | DONE |
+| Executive OEE | Date range selector, KPI cards with delta vs prior period, line comparison bar chart, 7-day trend (A/P/Q), six-big-losses bar chart, OEE-at-risk from alerts | DONE |
+| Alert Triage | Ranked alert table (severity, asset, mode, confidence, failure prob, OEE impact, onset), acknowledge/investigate/suppress actions with audit trail | DONE |
+| Asset Digital Twin | Asset selector, health gauge (score/risk/mode), sensor charts (vibration/temp/RPM) with threshold lines + anomaly markers + forecast bands, maintenance history, open WOs, anomaly drivers | DONE |
+| Ask Aegis | Chat with AEGIS_RCA_AGENT via !RUN(), expandable evidence/trace, golden-path suggestion, CORTEX.COMPLETE fallback | DONE |
+| Work Order Review | Tab 1: Pending drafts with parts panel (shortage highlight, purchase requisitions, RFQ text), approve/reject with confirmation. Tab 2: Active WOs with outbox sync status. Tab 3: Audit trail | DONE |
+
+**Grants:** USAGE ON STREAMLIT to PUBLIC.

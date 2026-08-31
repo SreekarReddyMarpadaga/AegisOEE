@@ -8,7 +8,7 @@ Deploy the AegisOEE Command Center as Streamlit in Snowflake (container runtime 
 
 ## Deliverables
 
-1. `app/streamlit_app.py` + `app/pages/` + `app/environment.yml` — structure the app for **ease of use and comprehension, not a fixed page count**: the five core capabilities below are mandatory, but split or merge pages (e.g., a dedicated Parts & Procurement view) wherever it improves clarity. Every core capability must be reachable within two clicks from the sidebar; avoid fragmenting into more than ~7 pages.
+1. `app/Home.py` + `app/pages/` + `app/environment.yml` — structure the app for **ease of use and comprehension, not a fixed page count**: the five core capabilities below are mandatory, but split or merge pages (e.g., a dedicated Parts & Procurement view) wherever it improves clarity. Every core capability must be reachable within two clicks from the sidebar; avoid fragmenting into more than ~7 pages.
    - **1_Executive_OEE**: OEE/A/P/Q KPI cards with deltas, line comparison, 7-day trend, six-big-losses waterfall, "OEE at risk" card (sum of open-alert est. impact) and avoided-downtime scenario.
    - **2_Alert_Triage**: ranked open alerts (priority, confidence, mode, horizon, OEE impact), actions Acknowledge / Investigate (link to twin) / Suppress-with-reason, each writing audit rows.
    - **3_Asset_Digital_Twin**: asset selector; sensor trends with anomaly markers + forecast bands from ML.SIGNAL_FORECASTS; ground-truth-free health gauge; maintenance timeline; open WOs; top model drivers.

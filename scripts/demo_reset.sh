@@ -9,6 +9,8 @@ Read AGENTS.md. Non-interactive demo reset for AEGIS_OEE only:
 2. Close or delete alerts created today: UPDATE AEGIS_OEE.ACTION.ALERT SET status='CLOSED' WHERE onset_ts >= CURRENT_DATE AND status <> 'CLOSED'.
 3. Mark today's non-approved work orders REJECTED with reason 'demo reset'; leave approved/synced history intact.
 4. Requeue nothing; clear OUTBOX rows in status 'PENDING' created today.
+4a. DELETE FROM AEGIS_OEE.ACTION.PURCHASE_REQUISITION WHERE created_ts >= CURRENT_DATE.
+4b. For any WORK_ORDER being rejected, set CLOSE_REASON='demo_reset' and CLOSED_AT=CURRENT_TIMESTAMP.
 5. Insert an audit row action='DEMO_RESET'.
 6. Confirm DT freshness by selecting max(ts) per layer.
 Print DEMO RESET COMPLETE when done.

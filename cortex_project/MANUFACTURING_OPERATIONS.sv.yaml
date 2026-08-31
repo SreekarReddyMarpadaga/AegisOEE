@@ -476,7 +476,7 @@ tables:
   # ── FACT: Work Orders ──────────────────────────────────────────────
   - name: WORK_ORDER
     description: >
-      Maintenance work orders linked to alerts. State lifecycle: DRAFT -> APPROVED -> SYNCED -> CLOSED (or REJECTED).
+      Maintenance work orders linked to alerts. State lifecycle: DRAFT -> APPROVED -> SYNCED -> IN_PROGRESS -> RESOLVED | CANCELLED | CLOSED | REJECTED. CLOSE_REASON and CLOSED_AT track terminal-state details.
       The agent proposes work orders but never approves them - human approval is required.
     base_table:
       database: AEGIS_OEE
@@ -506,7 +506,7 @@ tables:
         synonyms:
           - priority
       - name: WO_STATE
-        description: "Work order state: DRAFT, APPROVED, SYNCED, CLOSED, REJECTED"
+        description: "Work order state: DRAFT, APPROVED, SYNCED, IN_PROGRESS, RESOLVED, CANCELLED, CLOSED, REJECTED"
         expr: STATE
         data_type: VARCHAR
         synonyms:

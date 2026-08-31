@@ -35,7 +35,7 @@ Site HYD_PRECISION -> lines LINE_1, LINE_2 -> 10 assets:
 LINE_1: CNC_01_SPINDLE (golden path, criticality 5), CNC_02_SPINDLE (4),
 COOLANT_PUMP_01 (3), SERVO_MOTOR_01 (3), CONVEYOR_GBX_01 (2).
 LINE_2: CNC_03_SPINDLE (4), CNC_04_SPINDLE (4), COOLANT_PUMP_02 (3), AIR_COMP_01 (3),
-CONVEYOR_GBX_02 (2). Shifts: A 06:00-14:00, B 14:00-22:00, C 22:00-06:00 IST.
+CONVEYOR_GBX_02 (2). Shifts: A 06:00-14:00, B 14:00-22:00 IST.
 
 # DATA MODEL (essential columns)
 CORE.ASSET(asset_id PK, line_id, site_id, asset_type, criticality 1-5, ideal_rpm,
@@ -59,8 +59,9 @@ SEMANTIC.DT_SHIFT_OEE(line, asset, shift_date, shift_code, planned_min, downtime
   run_min, total_count, good_count, availability, performance, quality, oee)
 ACTION.ALERT(alert_id, asset_id, onset_ts, severity P1|P2|P3, confidence, failure_probability,
   predicted_mode, oee_impact_est, status NEW|TRIAGED|ACKED|SUPPRESSED|CLOSED, evidence VARIANT)
-ACTION.WORK_ORDER(wo_id, alert_id, asset_id, priority, state DRAFT|APPROVED|SYNCED|CLOSED|
-  REJECTED, title, description, evidence, approved_by, approved_ts)
+ACTION.WORK_ORDER(wo_id, alert_id, asset_id, priority, state DRAFT|APPROVED|SYNCED|IN_PROGRESS|
+  RESOLVED|CANCELLED|CLOSED|REJECTED, title, description, evidence, approved_by, approved_ts,
+  close_reason, closed_at)
 ACTION.ACTION_AUDIT: append-only (no UPDATE/DELETE).
 
 # FAILURE PHYSICS (synthetic data must encode these; 75 days, 10 labeled episodes)
@@ -121,8 +122,9 @@ model version). Causes are "most likely", never proven.
   notification (Slack webhook or outbox table fallback); guardrail tests (non-ACKED
   rejected, approver 'AGENT' rejected, duplicate rejected, dry-run writes nothing).
 6 Streamlit Command Center \u2014 core views (structure pages for clarity, polished styled UI): Executive OEE
-  (KPIs, loss waterfall, OEE-at-risk), Alert Triage, Asset Digital Twin (trends + anomaly markers +
-  forecast bands), Ask Aegis (agent chat with trace), Work-Order Review (approve/reject + audit +
+  (KPIs, loss waterfall, OEE-at-risk), Alert Triage, Asset Map (plant/line/asset hierarchy with
+  health status), Asset Digital Twin (trends + anomaly markers + forecast bands), Ask Aegis
+  (agent chat with trace), Work-Order Review (approve/reject + audit +
   parts availability/requisitions). Plus a
   "Built with CoCo" panel: SELECT interface, COUNT(*), SUM(token_credits) FROM
   SNOWFLAKE.ACCOUNT_USAGE.SNOWFLAKE_COCO_USAGE_HISTORY GROUP BY interface.

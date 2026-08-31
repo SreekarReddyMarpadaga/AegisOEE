@@ -46,7 +46,7 @@ Every state transition — proposal, acknowledgment, approval, rejection, suppre
 - The Streamlit approval flow must collect a typed approver name (not auto-populated from session).
 - Rejections also write audit rows with reason — there's no silent discard path.
 - The triage automation (hourly) may call PROPOSE but never CREATE. Human approval happens only in the Streamlit UI.
-- Parts reservation at approval time means reserved_qty must be decremented if a WO is later cancelled (a cleanup path needed but not in MVP scope — noted as tech debt).
+- Parts reservation at approval time means reserved_qty must be decremented if a WO is later cancelled. This is now implemented by the outbox dispatcher's inbound sync (scripts/outbox_dispatcher.py): when a WO is cancelled or its linked GitHub Issue is closed, the dispatcher releases reserved parts and writes audit rows.
 
 ## Alternatives Considered
 

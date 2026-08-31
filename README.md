@@ -16,7 +16,7 @@ flowchart LR
     AL --> TRI[Agent proposes work order →<br/>human approves in Streamlit →<br/>CREATE_WORK_ORDER + audit]
     TRI --> GH[GitHub Issue via MCP<br/>+ Slack webhook, OUTBOX fallback]
     DT --> SEM[Semantic view + Cortex Search<br/>→ RCA Agent]
-    SEM --> APP[Streamlit Command Center<br/>5 pages]
+    SEM --> APP[Streamlit Command Center<br/>6 pages]
     AL --> APP
 ```
 
@@ -81,7 +81,18 @@ Or run missions individually — each is idempotent, writes its artifacts into t
 | `prompts/03_ml.md` | Multi-series anomaly detection + forecasts + risk fusion + honest evaluation vs ground truth | `sql/05_ml_models.sql`, `tests/ml_recall_check.sql`, `TEST.ML_METRICS` | recall ≥ 0.8, lead ≥ 24 h |
 | `prompts/04_semantics_agent.md` | Semantic view (15 verified queries), Cortex Search over maintenance docs, RCA agent + 25-question eval | `sql/07–09_*.sql`, `semantic/` | eval ≥ 80 %, answers cite evidence |
 | `prompts/05_action_loop.md` | Alert scoring task, approval-gated work orders, audit, Slack/GitHub sync with OUTBOX fallback | `sql/06_alert_task.sql`, `sql/10_action_procs.sql` | guardrail tests PASS |
-| `prompts/06_app.md` | Streamlit Command Center (Executive OEE, Alert Triage, Asset Digital Twin, Ask Aegis, Work-Order Review with parts panel) | `app/` | all pages render, approval flow works |
+| `prompts/06_app.md` | Streamlit Command Center (Executive OEE, Alert Triage, Asset Digital Twin, Ask Aegis, Work-Order Review with Procurement tab, Asset Map) | `app/` | all pages render, approval flow works |
+
+### Alternative: Direct deploy (no LLM)
+
+If you prefer to skip the agent-driven build and replay the exact objects from a known-good state:
+
+```bash
+cd deploy
+./deploy_all.sh <connection_name>   # ~25-40 min (ML training dominates)
+```
+
+See `deploy/README.md` for details. Data regenerates deterministically (seed 42); ML models retrain.
 
 ### 5 — Run the demo
 

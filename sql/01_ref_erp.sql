@@ -194,6 +194,8 @@ CREATE TABLE IF NOT EXISTS ACTION.WORK_ORDER (
   github_issue_url STRING,
   approved_by      STRING,
   approved_ts      TIMESTAMP_TZ,
+  close_reason     STRING,
+  closed_at        TIMESTAMP_TZ,
   CONSTRAINT pk_work_order PRIMARY KEY (wo_id)
 );
 

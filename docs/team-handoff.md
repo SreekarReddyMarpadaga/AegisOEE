@@ -57,7 +57,7 @@ Confirm you have read all four files and state the next open step before doing a
 
 ## Repo map (30 seconds)
 
-`prompts/00–06` missions build everything (foundation → data → pipelines → ML → semantics/agent → action loop → app); `prompts/triage-automation.md` + `daily-oee-digest.md` are unattended automation prompts; `.cortex/` holds the 3 reusable skills, 4 subagents, sql-guard hook; `scripts/` is the harness (`preflight_probes`, `build_all`, `inject_anomaly`, `demo_reset`, `snapshot_usage`, `with_automations`); generated artifacts land in `sql/`, `data_gen/`, `ml/`, `semantic/`, `app/`, `tests/` and are committed for review + re-run.
+`prompts/00–06` missions build everything (foundation → data → pipelines → ML → semantics/agent → action loop → app); `prompts/triage-automation.md` + `daily-oee-digest.md` are unattended automation prompts; `.cortex/` holds the 3 reusable skills, 4 subagents, sql-guard hook; `scripts/` is the harness (`preflight_probes`, `build_all`, `inject_anomaly`, `demo_reset`, `snapshot_usage`, `with_automations`); `deploy/` contains deployment configs; generated artifacts land in `sql/`, `data_gen/`, `ml/`, `semantic/`, `app/`, `tests/` and are committed for review + re-run.
 
 ## Merge protocol (end-state)
 

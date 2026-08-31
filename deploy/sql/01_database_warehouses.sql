@@ -1,0 +1,48 @@
+-- =============================================================================
+-- 01_database_warehouses.sql — Database, schemas, warehouses, stages
+-- Exported from live AEGIS_OEE account, cleaned for idempotent replay.
+-- =============================================================================
+
+-- Database
+CREATE DATABASE IF NOT EXISTS AEGIS_OEE;
+
+-- Schemas (8 application schemas; INFORMATION_SCHEMA is automatic)
+CREATE SCHEMA IF NOT EXISTS AEGIS_OEE.RAW;
+CREATE SCHEMA IF NOT EXISTS AEGIS_OEE.CORE;
+CREATE SCHEMA IF NOT EXISTS AEGIS_OEE.FEATURES;
+CREATE SCHEMA IF NOT EXISTS AEGIS_OEE.ML;
+CREATE SCHEMA IF NOT EXISTS AEGIS_OEE.SEMANTIC;
+CREATE SCHEMA IF NOT EXISTS AEGIS_OEE.ACTION;
+CREATE SCHEMA IF NOT EXISTS AEGIS_OEE.APP;
+CREATE SCHEMA IF NOT EXISTS AEGIS_OEE.TEST;
+
+-- Warehouses
+CREATE WAREHOUSE IF NOT EXISTS AEGIS_WH
+  WAREHOUSE_SIZE = 'XSMALL'
+  AUTO_SUSPEND = 60
+  AUTO_RESUME = TRUE
+  INITIALLY_SUSPENDED = TRUE
+  COMMENT = 'AegisOEE build/DT/tasks warehouse';
+
+CREATE WAREHOUSE IF NOT EXISTS AEGIS_APP_WH
+  WAREHOUSE_SIZE = 'XSMALL'
+  AUTO_SUSPEND = 60
+  AUTO_RESUME = TRUE
+  INITIALLY_SUSPENDED = TRUE
+  COMMENT = 'AegisOEE app/agent warehouse';
+
+-- Stages
+CREATE STAGE IF NOT EXISTS AEGIS_OEE.RAW.DOC_STAGE
+  DIRECTORY = (ENABLE = TRUE)
+  COMMENT = 'Maintenance manuals and technician notes';
+
+CREATE STAGE IF NOT EXISTS AEGIS_OEE.APP.APP_STAGE
+  COMMENT = 'Streamlit app artifacts';
+
+CREATE STAGE IF NOT EXISTS AEGIS_OEE.APP.SKILL_STAGE
+  COMMENT = 'Published CoCo skills';
+
+-- Set session defaults
+USE DATABASE AEGIS_OEE;
+USE WAREHOUSE AEGIS_WH;
+ALTER SESSION SET TIMEZONE = 'Asia/Kolkata';

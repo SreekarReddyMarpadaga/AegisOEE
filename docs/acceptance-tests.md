@@ -294,7 +294,7 @@ CALL AEGIS_OEE.ACTION.CREATE_WORK_ORDER('<acked_alert_id>', 'AGENT', FALSE);
 ## Mission 06 — Streamlit App
 
 - [ ] T06-01: App deployed to AEGIS_OEE.APP on AEGIS_APP_WH.
-- [ ] T06-02: All 5 core capabilities reachable within 2 clicks from sidebar.
+- [ ] T06-02: All 6 core capabilities reachable within 2 clicks from sidebar.
 - [ ] T06-03: Executive OEE page — KPI cards with deltas, 7-day trend, loss waterfall, OEE-at-risk.
 - [ ] T06-04: Alert Triage page — ranked alerts; ACK/Investigate/Suppress actions write audit rows.
 - [ ] T06-05: Asset Digital Twin page — sensor trends with anomaly markers + forecast bands, health gauge, maintenance timeline.

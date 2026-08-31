@@ -68,14 +68,19 @@ def replay_episode(session, asset_id: str, mode: str,
     print(f"Replay complete. {total_ticks} rows inserted.")
 
 
-def heartbeat(session, tick_s: int = 60, seed: int = 42):
+def heartbeat(session, tick_s: int = 60, seed: int = 42, exclude: str = ""):
     rng = np.random.default_rng(seed)
-    print(f"Heartbeat mode: emitting healthy readings for all {len(ASSETS)} assets every {tick_s}s. Ctrl+C to stop.")
+    excluded = {a.strip() for a in exclude.split(",") if a.strip()}
+    active = [a for a in ASSETS if a["asset_id"] not in excluded]
+    note = f" (excluding {', '.join(sorted(excluded))})" if excluded else ""
+    print(f"Heartbeat mode: emitting healthy readings + production events for {len(active)} assets every {tick_s}s{note}. Ctrl+C to stop.")
 
+    tick_count = 0
     while True:
         now = datetime.now(IST)
+        tick_count += 1
         values = []
-        for asset in ASSETS:
+        for asset in active:
             vib = round(1.5 + rng.normal(0, 0.2), 4)
             kurt = round(3.0 + rng.normal(0, 0.2), 4)
             temp = round(38.0 + rng.normal(0, 1.5), 2)
@@ -92,7 +97,32 @@ def heartbeat(session, tick_s: int = 60, seed: int = 42):
         VALUES {', '.join(values)}
         """
         session.sql(sql).collect()
-        print(f"  [{now.strftime('%H:%M:%S')}] {len(ASSETS)} heartbeat rows inserted")
+
+        # Emit production events every ~60 ticks (~1 hour at 60s tick)
+        # to keep OEE populated with realistic counts
+        prod_interval = max(1, 3600 // tick_s)
+        if tick_count % prod_interval == 0:
+            prod_values = []
+            for asset in active:
+                ideal_cycle = asset.get("ideal_cycle_s", 45)
+                units_per_hour = int(3600 / ideal_cycle)
+                produced = max(1, units_per_hour + int(rng.normal(0, units_per_hour * 0.05)))
+                good = max(1, produced - int(rng.integers(0, max(1, int(produced * 0.03)))))
+                reject = produced - good
+                order_id = f"ORD_{asset['line_id']}_{now.strftime('%Y%m%d')}_{rng.integers(1,999):03d}"
+                prod_values.append(
+                    f"('{asset['asset_id']}', '{now.isoformat()}', '{order_id}', 'RUN', "
+                    f"{produced}, {good}, {reject}, {round(ideal_cycle + rng.normal(0, 1), 2)})"
+                )
+            prod_sql = f"""
+            INSERT INTO AEGIS_OEE.RAW.PRODUCTION_EVENT
+            (ASSET_ID, TS, ORDER_ID, STATE, PRODUCED_COUNT, GOOD_COUNT, REJECT_COUNT, CYCLE_TIME_S)
+            VALUES {', '.join(prod_values)}
+            """
+            session.sql(prod_sql).collect()
+            print(f"  [{now.strftime('%H:%M:%S')}] {len(active)} telemetry + {len(active)} production events")
+        else:
+            print(f"  [{now.strftime('%H:%M:%S')}] {len(active)} heartbeat rows inserted")
         time.sleep(tick_s)
 
 
@@ -103,6 +133,7 @@ def main():
     parser.add_argument("--duration-min", type=int, default=30)
     parser.add_argument("--tick-s", type=int, default=10)
     parser.add_argument("--heartbeat", action="store_true")
+    parser.add_argument("--exclude", type=str, default="", help="Comma-separated asset IDs heartbeat should skip")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--conn", type=str, default=os.environ.get("COCO_CONN", "aegis"))
     args = parser.parse_args()
@@ -113,7 +144,7 @@ def main():
 
     try:
         if args.heartbeat:
-            heartbeat(session, args.tick_s, args.seed)
+            heartbeat(session, args.tick_s, args.seed, args.exclude)
         elif args.replay and args.asset:
             replay_episode(session, args.asset, args.replay,
                            args.duration_min, args.tick_s, args.seed)

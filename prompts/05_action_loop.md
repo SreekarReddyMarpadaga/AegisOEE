@@ -18,8 +18,13 @@ The closed loop: scored alerts with dedup + confidence gating, human-approval wo
    - `ACTION.QUEUE_GITHUB_SYNC(wo_id)` — builds the GitHub issue payload per the triage skill template into OUTBOX target='GITHUB' (the MCP leg is executed by the triage automation/CLI, not by SQL). **Issue body includes the parts availability table and any requisition quotes.**
    - `TASK_OUTBOX_RETRY` every 10 min: increments attempts, retries Slack deliveries, marks dead after 5 attempts.
 3. Wire post-approval flow: successful non-dry-run CREATE_WORK_ORDER → QUEUE_GITHUB_SYNC + NOTIFY_SLACK automatically (proc call or triggered task).
-4. Guardrail tests executed and persisted to `TEST.ACTION_GUARDRAIL_RESULTS`: create on non-ACKED alert rejected; approver='AGENT' rejected; duplicate WO rejected; dry-run writes nothing; audit rows appear for every attempt; **parts flow: golden-path alert produces a shortage requisition with a non-zero quote; a fully-stocked part produces no requisition; approval reserves exactly qty_required**.
-5. Append run record to `docs/run-records.md`.
+4. **Work Order status model**: WORK_ORDER.STATE supports the full lifecycle: DRAFT → APPROVED → SYNCED → IN_PROGRESS → RESOLVED | CANCELLED | CLOSED | REJECTED. Add columns `CLOSE_REASON VARCHAR` and `CLOSED_AT TIMESTAMP_TZ` to WORK_ORDER. The outbox dispatcher (scripts/outbox_dispatcher.py) handles the terminal-state transitions:
+   - **Outbound dispatch**: polls WORK_ORDER_OUTBOX for PENDING items, creates GitHub Issues (with parts table, requisition quotes, safety statement) and sends Slack notifications.
+   - **GitHub closure sync-back**: when a work order is CLOSED or REJECTED, the dispatcher closes the linked GitHub Issue with a comment and state_reason (completed or not_planned).
+   - **Inbound sync**: polls linked GitHub issues for open WOs; if an issue was closed externally, transitions the WO to RESOLVED (completed) or CANCELLED (not_planned), releases reserved parts on cancellation, and queues a Slack notification.
+   - All state transitions produce ACTION_AUDIT rows. The dispatcher runs locally via `GITHUB_PAT=... SLACK_WEBHOOK_URL=... python scripts/outbox_dispatcher.py`. For accounts with EAI, sql/11_integrations.sql has the native Snowflake procedure versions (commented, requires EAI setup).
+5. Guardrail tests executed and persisted to `TEST.ACTION_GUARDRAIL_RESULTS`: create on non-ACKED alert rejected; approver='AGENT' rejected; duplicate WO rejected; dry-run writes nothing; audit rows appear for every attempt; **parts flow: golden-path alert produces a shortage requisition with a non-zero quote; a fully-stocked part produces no requisition; approval reserves exactly qty_required**.
+6. Append run record to `docs/run-records.md`.
 
 ## Acceptance criteria
 

@@ -5,7 +5,7 @@ You are building **AegisOEE**, a closed-loop predictive-maintenance and OEE deci
 ## Non-negotiables
 
 1. Everything runs **inside Snowflake** (tables, Dynamic Tables, tasks, ML, agents, Streamlit). No external compute except the local data simulator and MCP calls.
-2. Write every generated artifact to the repo (`sql/`, `data_gen/`, `ml/`, `semantic/`, `app/`, `tests/`) **before** executing it, so runs are reviewable and repeatable.
+2. Write every generated artifact to the repo (`sql/`, `data_gen/`, `ml/`, `semantic/`, `app/`, `tests/`, `scripts/`, `deploy/`, `cortex_project/`) **before** executing it, so runs are reviewable and repeatable.
 3. Never ask interactive questions in `exec` missions. If a prerequisite is missing, print `MISSION <NN> FAILED: <reason>` and stop.
 4. End every successful mission with the exact line `MISSION <NN> COMPLETE`.
 5. Append a run record (date, mission, session id if known, objects created) to `docs/run-records.md`.
@@ -63,7 +63,7 @@ Shifts: A 06:00–14:00, B 14:00–22:00 IST; 7 days/week. Daily 30-min planned-
 | `SEMANTIC.DT_SHIFT_OEE` | line_id, asset_id, shift_date, shift_code — planned_min, downtime_min, run_min, total_count, good_count, availability, performance, quality, oee |
 | `ML.ANOMALY_EVENTS` | asset_id, ts, series_name, is_anomaly, distance, percentile, forecast, lower, upper |
 | `ACTION.ALERT` | alert_id PK, asset_id, onset_ts, severity P1/P2/P3, confidence 0–1, failure_probability, predicted_mode, oee_impact_est, status ('NEW','TRIAGED','ACKED','SUPPRESSED','CLOSED'), evidence VARIANT |
-| `ACTION.WORK_ORDER` | wo_id PK, alert_id FK, asset_id, priority, state ('DRAFT','APPROVED','SYNCED','CLOSED','REJECTED'), title, description, evidence VARIANT, github_issue_url, approved_by, approved_ts |
+| `ACTION.WORK_ORDER` | wo_id PK, alert_id FK, asset_id, priority, state ('DRAFT','APPROVED','SYNCED','IN_PROGRESS','RESOLVED','CANCELLED','CLOSED','REJECTED'), title, description, evidence VARIANT, github_issue_url, approved_by, approved_ts, close_reason, closed_at TIMESTAMP_TZ |
 | `ACTION.WORK_ORDER_OUTBOX` | outbox_id, wo_id, target ('GITHUB','SLACK'), payload VARIANT, attempts, last_error, status |
 | `ACTION.ACTION_AUDIT` | append-only: audit_id, ts, actor, action, object_ref, detail VARIANT |
 
@@ -96,6 +96,7 @@ Every ground-truth failure must have: matching `CORE.DOWNTIME_EVENT` (unplanned,
 - Dedup: one open alert per (asset_id, predicted_mode); refresh evidence instead of inserting duplicates
 - The agent may call `PROPOSE_WORK_ORDER` (returns a draft, zero side effects). Only `CREATE_WORK_ORDER` writes, and it requires approver identity + open alert in `ACKED` state + no duplicate open WO; `DRY_RUN` defaults TRUE. Every proposal/approval/rejection/sync lands in `ACTION.ACTION_AUDIT`.
 - **Parts check (MRO)**: every work-order draft resolves its parts kit via `FAILURE_MODE_PARTS`, compares against `PARTS_INVENTORY` (on_hand − reserved). Shortages auto-create `PURCHASE_REQUISITION` rows with a computed quote (qty × unit_cost, supplier, lead time) and an AI-drafted RFQ text. Approving a WO reserves available parts (increments reserved_qty) and links open requisitions; parts lead time extends the WO's planned window and is shown to the approver.
+- **Outbox dispatcher** (`scripts/outbox_dispatcher.py`): handles outbound GitHub Issue + Slack delivery, GitHub closure sync-back (WO closed/rejected → close linked Issue), and inbound sync (Issue closed externally → WO transitions to RESOLVED/CANCELLED, releases reserved parts on cancellation). All state transitions produce `ACTION_AUDIT` rows. For accounts with EAI, `sql/11_integrations.sql` has native Snowflake procedure versions.
 - RCA answers always use the structure: Assessment / Evidence / Operational impact / Alternatives considered / Recommended action / Safety statement / Trace. Causes are "most likely", never proven.
 
 ## Skills in this repo

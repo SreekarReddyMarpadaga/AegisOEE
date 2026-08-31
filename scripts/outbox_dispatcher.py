@@ -345,11 +345,11 @@ def sync_github_status(github_pat):
             if new_state == "CANCELLED":
                 snow_sql(f"""
                     UPDATE AEGIS_OEE.CORE.PARTS_INVENTORY PI
-                    SET PI.QTY_RESERVED = PI.QTY_RESERVED - PR.QTY_REQUESTED
+                    SET PI.RESERVED_QTY = PI.RESERVED_QTY - PR.QTY
                     FROM AEGIS_OEE.ACTION.PURCHASE_REQUISITION PR
                     WHERE PR.WO_ID = '{wo_id}'
                       AND PR.PART_ID = PI.PART_ID
-                      AND PI.QTY_RESERVED >= PR.QTY_REQUESTED
+                      AND PI.RESERVED_QTY >= PR.QTY
                 """)
                 print(f"    Released reserved parts for {wo_id}")
 

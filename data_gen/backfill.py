@@ -150,29 +150,31 @@ FAILURE_MODE_PARTS_MAP = [
 
 def get_snowpark_session(conn_name: str = "aegis"):
     from snowflake.snowpark import Session
-    import tomllib, os, pathlib
-    toml_path = pathlib.Path.home() / ".snowflake" / "connections.toml"
-    with open(toml_path, "rb") as f:
-        cfg_all = tomllib.load(f)
-    cfg = cfg_all.get(conn_name)
-    if cfg is None:
-        raise RuntimeError(f"Connection '{conn_name}' not found in {toml_path}")
-    params = {
-        "account": cfg["account"],
-        "user": cfg["user"],
-        "database": "AEGIS_OEE",
-        "warehouse": "AEGIS_WH",
-        "schema": "RAW",
-    }
-    pw = cfg.get("password", "")
-    if pw.startswith("ey"):
-        params["authenticator"] = "oauth"
-        params["token"] = pw
-    elif pw:
-        params["password"] = pw
-    else:
-        params["authenticator"] = "externalbrowser"
-    return Session.builder.configs(params).create()
+    # Preferred: native connections.toml resolution (same path the snow CLI uses)
+    try:
+        session = Session.builder.config("connection_name", conn_name).create()
+    except Exception as native_err:
+        import tomllib, pathlib
+        toml_path = pathlib.Path.home() / ".snowflake" / "connections.toml"
+        with open(toml_path, "rb") as f:
+            cfg = tomllib.load(f).get(conn_name)
+        if cfg is None:
+            raise RuntimeError(f"Connection '{conn_name}' not found in {toml_path}") from native_err
+        params = {"account": cfg["account"], "user": cfg["user"]}
+        secret = cfg.get("password") or cfg.get("token") or ""
+        auth = (cfg.get("authenticator") or "").lower()
+        if auth == "oauth":
+            params["authenticator"] = "oauth"
+            params["token"] = secret
+        elif secret:
+            params["password"] = secret  # PATs authenticate as passwords
+        else:
+            params["authenticator"] = "externalbrowser"
+        session = Session.builder.configs(params).create()
+    session.sql("USE DATABASE AEGIS_OEE").collect()
+    session.sql("USE WAREHOUSE AEGIS_WH").collect()
+    session.sql("USE SCHEMA RAW").collect()
+    return session
 
 
 def load_df(session, df: pd.DataFrame, table_fqn: str, mode: str = "append"):

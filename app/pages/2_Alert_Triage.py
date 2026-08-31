@@ -97,7 +97,7 @@ for idx, row in alerts_df.iterrows():
                         """).collect()
                         write_audit(
                             session, "APP_USER", "ALERT_SUPPRESSED", alert_id,
-                            '{{"reason":"' + safe_reason + '"}}'
+                            '{"reason":"' + safe_reason + '"}'
                         )
                         st.success(f"Alert {alert_id} suppressed.")
                         st.rerun()

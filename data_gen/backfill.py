@@ -184,7 +184,7 @@ def load_df(session, df: pd.DataFrame, table_fqn: str, mode: str = "append"):
     fqn = f"AEGIS_OEE.{table_fqn}"
     # write_pandas via the session's connection
     from snowflake.snowpark._internal.utils import TempObjectType
-    success, nchunks, nrows, _ = session.write_pandas(
+    result = session.write_pandas(
         df, table_fqn.split(".")[-1],
         database="AEGIS_OEE",
         schema=table_fqn.split(".")[0] if "." in table_fqn else "RAW",
@@ -193,6 +193,7 @@ def load_df(session, df: pd.DataFrame, table_fqn: str, mode: str = "append"):
         quote_identifiers=False
     )
     elapsed = time.time() - t0
+    nchunks = result[1] if isinstance(result, tuple) and len(result) > 1 else "?"
     print(f"  Loaded {len(df):,} rows -> {fqn} in {elapsed:.1f}s ({nchunks} chunks)")
     return len(df)
 
@@ -223,10 +224,99 @@ def get_shift_code(ts_ist: datetime) -> str:
     return "A" if ts_ist.hour < 14 else "B"
 
 
+MINOR_STOP_REASONS = ["CHANGEOVER", "MATERIAL_WAIT", "MINOR_JAM", "TOOL_CHANGE", "ADJUSTMENT"]
+
+# Per-asset-type loss profiles: (avg_stops_per_shift, avg_stop_min, base_speed_loss, base_reject_rate)
+ASSET_LOSS_PROFILES = {
+    "CNC spindle":      {"stops": (3, 5), "stop_min": (8, 25), "speed_loss": 0.25, "reject_rate": 0.04},
+    "servo motor":      {"stops": (3, 5), "stop_min": (5, 20), "speed_loss": 0.23, "reject_rate": 0.035},
+    "coolant pump":     {"stops": (2, 4), "stop_min": (5, 15), "speed_loss": 0.20, "reject_rate": 0.03},
+    "conveyor gearbox": {"stops": (3, 6), "stop_min": (5, 20), "speed_loss": 0.22, "reject_rate": 0.03},
+    "air compressor":   {"stops": (2, 4), "stop_min": (5, 15), "speed_loss": 0.19, "reject_rate": 0.025},
+}
+
+
+def _generate_minor_stops(loss_rng, asset, start_dt, num_days, episode_map, reset_windows_map):
+    """Generate minor unplanned stops per asset per shift. Uses separate RNG stream."""
+    aid = asset["asset_id"]
+    atype = asset["asset_type"]
+    profile = ASSET_LOSS_PROFILES.get(atype, {"stops": (2, 4), "stop_min": (5, 15)})
+    line_mult = 1.15 if asset["line_id"] == "LINE_2" else 1.0
+
+    stops = []
+    asset_episodes = episode_map.get(aid, [])
+    reset_windows = reset_windows_map.get(aid, [])
+
+    for d in range(num_days):
+        day_dt = start_dt + timedelta(days=d)
+        for shift_code in ["A", "B"]:
+            if shift_code == "A":
+                shift_start = datetime(day_dt.year, day_dt.month, day_dt.day, 6, 0, tzinfo=IST)
+                shift_end = datetime(day_dt.year, day_dt.month, day_dt.day, 14, 0, tzinfo=IST)
+                # Skip planned maintenance window 05:30-06:00 (already before shift)
+                # But shift A starts at 06:00, so first stop earliest at 06:05
+                earliest = shift_start + timedelta(minutes=5)
+            else:
+                shift_start = datetime(day_dt.year, day_dt.month, day_dt.day, 14, 0, tzinfo=IST)
+                shift_end = datetime(day_dt.year, day_dt.month, day_dt.day, 22, 0, tzinfo=IST)
+                earliest = shift_start + timedelta(minutes=5)
+
+            n_stops = int(loss_rng.integers(profile["stops"][0], profile["stops"][1] + 1) * line_mult)
+
+            placed = []
+            for _ in range(n_stops):
+                dur = int(loss_rng.integers(profile["stop_min"][0], profile["stop_min"][1] + 1))
+                # Try up to 10 times to find a non-overlapping slot
+                for _attempt in range(10):
+                    max_start_offset = max(0, int((shift_end - earliest).total_seconds() / 60) - dur - 5)
+                    if max_start_offset <= 0:
+                        break
+                    offset = int(loss_rng.integers(0, max_start_offset))
+                    s_start = earliest + timedelta(minutes=offset)
+                    s_end = s_start + timedelta(minutes=dur)
+
+                    # Check no overlap with existing placed stops
+                    overlap = False
+                    for ps, pe in placed:
+                        if s_start < pe and s_end > ps:
+                            overlap = True
+                            break
+                    if overlap:
+                        continue
+
+                    # Check no overlap with failure downtime/reset windows
+                    for rw_start, rw_end in reset_windows:
+                        if s_start < rw_end and s_end > rw_start:
+                            overlap = True
+                            break
+                    if overlap:
+                        continue
+
+                    # Check no overlap with degradation period downtime
+                    for ep in asset_episodes:
+                        if s_start < ep["fail_ts"] and s_end > ep["fail_ts"]:
+                            overlap = True
+                            break
+                    if overlap:
+                        continue
+
+                    placed.append((s_start, s_end))
+                    reason = loss_rng.choice(MINOR_STOP_REASONS)
+                    stops.append({
+                        "asset_id": aid, "start": s_start, "end": s_end,
+                        "minutes": dur, "reason": reason,
+                        "shift_date": day_dt, "shift_code": shift_code,
+                    })
+                    break
+
+    return stops
+
+
 def generate_telemetry(rng: np.random.Generator, start_date: date,
                        num_days: int, assets: list, episodes: list,
-                       hard_negs: list) -> tuple:
+                       hard_negs: list, seed: int = SEED) -> tuple:
     """Generate 1-min telemetry for all assets. Returns (telemetry_rows, downtime_rows, maint_rows, prod_event_rows)."""
+    loss_rng = np.random.default_rng(seed + 1)  # separate stream for realistic losses
     
     start_dt = datetime(start_date.year, start_date.month, start_date.day, 0, 0, tzinfo=IST)
     end_dt = start_dt + timedelta(days=num_days)
@@ -260,6 +350,9 @@ def generate_telemetry(rng: np.random.Generator, start_date: date,
     all_prod_events = []
     downtime_counter = [0]
     maint_counter = [0]
+
+    # Pre-compute reset windows per asset for minor stop placement
+    reset_windows_map = {}
 
     for asset in assets:
         aid = asset["asset_id"]
@@ -336,6 +429,57 @@ def generate_telemetry(rng: np.random.Generator, start_date: date,
                     "TECHNICIAN_NOTE": "Sensor replaced. Readings returned to normal. Root cause: moisture ingress at junction box.",
                 })
 
+        reset_windows_map[aid] = reset_windows
+
+    # Generate minor stops for all assets (separate RNG stream)
+    all_minor_stops = {}
+    for asset in assets:
+        aid = asset["asset_id"]
+        stops = _generate_minor_stops(loss_rng, asset, start_dt, num_days,
+                                      episode_map, reset_windows_map)
+        all_minor_stops[aid] = stops
+        for s in stops:
+            downtime_counter[0] += 1
+            all_downtime.append({
+                "EVENT_ID": f"DT{downtime_counter[0]:04d}",
+                "ASSET_ID": aid,
+                "START_TS": s["start"],
+                "END_TS": s["end"],
+                "IS_PLANNED": False,
+                "REASON_CODE": s["reason"],
+                "FAILURE_MODE": None,
+                "MINUTES": round(s["minutes"], 1),
+            })
+
+    # Second pass: generate telemetry per asset
+    # Reset the main rng to match original sequence by re-reading asset baselines
+    rng2 = np.random.default_rng(seed)
+    for asset in assets:
+        aid = asset["asset_id"]
+        baseline_vib = 1.5 + rng2.random() * 1.0
+        baseline_kurt = 3.0 + rng2.random() * 0.5
+        baseline_temp = 35.0 + rng2.random() * 10.0
+        ideal_rpm = asset["ideal_rpm"]
+        ideal_cycle = asset.get("ideal_cycle_s") or 60.0
+        baseline_load = 55 + rng2.random() * 15
+        atype = asset["asset_type"]
+        loss_profile = ASSET_LOSS_PROFILES.get(atype, {"speed_loss": 0.08, "reject_rate": 0.03})
+        line_factor = 1.08 if asset["line_id"] == "LINE_2" else 1.0
+
+        asset_episodes = episode_map.get(aid, [])
+        asset_hns = hn_map.get(aid, [])
+        reset_windows = reset_windows_map[aid]
+        minor_stops = all_minor_stops.get(aid, [])
+        # Build sorted list of (start, end, reason) for quick lookup
+        minor_stop_intervals = [(s["start"], s["end"], s["reason"]) for s in minor_stops]
+        minor_stop_intervals.sort()
+
+        # Consume rng state to match original: repair_hours per episode
+        for ep in asset_episodes:
+            if ep["mode"] != "SENSOR_FAULT":
+                _ = 2 + rng2.integers(0, 22)
+                _ = _gen_tech_note(rng2, ep["mode"], aid)
+
         # Generate minute-by-minute telemetry
         asset_telem = []
         current_ts = start_dt
@@ -343,6 +487,7 @@ def generate_telemetry(rng: np.random.Generator, start_date: date,
         good_count_acc = 0
         reject_count_acc = 0
         last_prod_event_hour = None
+        last_stop_end = None  # track when last minor stop ended for warmup
 
         while current_ts < end_dt:
             ts_ist = current_ts
@@ -352,25 +497,36 @@ def generate_telemetry(rng: np.random.Generator, start_date: date,
                 current_ts += timedelta(minutes=1)
                 continue
 
-            # Check if in downtime/reset window
+            # Check if in downtime/reset window (failure downtime)
             in_reset = False
             for rw_start, rw_end in reset_windows:
                 if rw_start <= ts_ist < rw_end:
                     in_reset = True
                     break
 
+            # Check if in a minor stop
+            in_minor_stop = False
+            if not in_reset:
+                for ms_start, ms_end, ms_reason in minor_stop_intervals:
+                    if ms_start <= ts_ist < ms_end:
+                        in_minor_stop = True
+                        last_stop_end = ms_end
+                        break
+                    if ms_start > ts_ist:
+                        break
+
             # Random gap (~0.3% of readings missing)
-            if rng.random() < 0.003 and not in_reset:
+            if rng2.random() < 0.003 and not in_reset and not in_minor_stop:
                 current_ts += timedelta(minutes=1)
                 continue
 
-            if in_reset:
+            if in_reset or in_minor_stop:
                 # During downtime: rpm=0, minimal readings
                 row = {
                     "ASSET_ID": aid, "TS": ts_ist,
-                    "VIBRATION_RMS": round(rng.normal(0.3, 0.1), 4),
-                    "VIBRATION_KURTOSIS": round(rng.normal(3.0, 0.2), 4),
-                    "TEMP_C": round(baseline_temp * 0.6 + rng.normal(0, 1), 2),
+                    "VIBRATION_RMS": round(rng2.normal(0.3, 0.1), 4),
+                    "VIBRATION_KURTOSIS": round(rng2.normal(3.0, 0.2), 4),
+                    "TEMP_C": round(baseline_temp * 0.6 + rng2.normal(0, 1), 2),
                     "RPM": 0.0,
                     "LOAD_PCT": 0.0,
                     "QUALITY_FLAG": "OK",
@@ -389,10 +545,10 @@ def generate_telemetry(rng: np.random.Generator, start_date: date,
                     t = min(1.0, elapsed / total_dur)
                     gen = FAILURE_GENERATORS[ep["mode"]]
                     if ep["mode"] == "BEARING_WEAR":
-                        mods = gen(t, rng, asset["vib_alert_mm_s"],
+                        mods = gen(t, rng2, asset["vib_alert_mm_s"],
                                    asset["vib_danger_mm_s"], baseline_vib)
                     else:
-                        mods = gen(t, rng)
+                        mods = gen(t, rng2)
                     active_mode = ep["mode"]
                     break
 
@@ -400,31 +556,43 @@ def generate_telemetry(rng: np.random.Generator, start_date: date,
             for hn in asset_hns:
                 if hn["start"] <= ts_ist < hn["end"]:
                     if hn["type"] == "HOT_HEAVY_LOAD":
-                        mods.temp_c_add += 12 + rng.normal(0, 2)
+                        mods.temp_c_add += 12 + rng2.normal(0, 2)
                         mods.load_pct_add += 15
-                        mods.vib_rms_mult = 1.0 + rng.normal(0, 0.05)
+                        mods.vib_rms_mult = 1.0 + rng2.normal(0, 0.05)
                     elif hn["type"] == "PLANNED_RPM_CHANGE":
-                        mods.rpm_mult = 0.75 + rng.normal(0, 0.02)
+                        mods.rpm_mult = 0.75 + rng2.normal(0, 0.02)
                         mods.cycle_time_mult = 1.3
                     elif hn["type"] == "SENSOR_DROPOUT":
-                        if rng.random() < 0.3:
+                        if rng2.random() < 0.3:
                             mods.quality_flag = "GAP"
                     break
 
+            # Apply baseline speed loss (separate RNG)
+            base_speed_loss = loss_profile["speed_loss"] * line_factor
+            speed_noise = loss_rng.normal(0, 0.02)
+            mods.cycle_time_mult = max(mods.cycle_time_mult, 1.0) * (1.0 + base_speed_loss + speed_noise)
+
+            # Post-stop warmup: extra speed loss for 15 min after a minor stop
+            if last_stop_end is not None:
+                warmup_elapsed = (ts_ist - last_stop_end).total_seconds() / 60
+                if 0 <= warmup_elapsed < 15:
+                    warmup_factor = 0.15 * (1.0 - warmup_elapsed / 15)
+                    mods.cycle_time_mult *= (1.0 + warmup_factor)
+
             # Compute telemetry values
-            load = min(100, max(0, baseline_load + mods.load_pct_add + rng.normal(0, 3)))
-            vib = baseline_vib * mods.vib_rms_mult + rng.normal(0, baseline_vib * 0.05)
-            kurt = baseline_kurt + mods.vib_kurtosis_add + rng.normal(0, 0.15)
-            temp = baseline_temp + mods.temp_c_add + rng.normal(0, 0.8)
+            load = min(100, max(0, baseline_load + mods.load_pct_add + rng2.normal(0, 3)))
+            vib = baseline_vib * mods.vib_rms_mult + rng2.normal(0, baseline_vib * 0.05)
+            kurt = baseline_kurt + mods.vib_kurtosis_add + rng2.normal(0, 0.15)
+            temp = baseline_temp + mods.temp_c_add + rng2.normal(0, 0.8)
             rpm_val = ideal_rpm * mods.rpm_mult
             if mods.rpm_jitter > 0:
-                rpm_val += rng.normal(0, ideal_rpm * mods.rpm_jitter)
-            rpm_val += rng.normal(0, ideal_rpm * 0.01)
+                rpm_val += rng2.normal(0, ideal_rpm * mods.rpm_jitter)
+            rpm_val += rng2.normal(0, ideal_rpm * 0.01)
 
             # Micro-stop check
-            if mods.micro_stop_prob > 0 and rng.random() < mods.micro_stop_prob:
+            if mods.micro_stop_prob > 0 and rng2.random() < mods.micro_stop_prob:
                 rpm_val = 0
-                vib = rng.normal(0.3, 0.1)
+                vib = rng2.normal(0.3, 0.1)
                 load = 0
 
             flag = mods.quality_flag
@@ -445,11 +613,18 @@ def generate_telemetry(rng: np.random.Generator, start_date: date,
                 current_hour = ts_ist.replace(minute=0, second=0, microsecond=0)
                 if last_prod_event_hour is None or current_hour > last_prod_event_hour:
                     if last_prod_event_hour is not None and rpm_val > 0:
-                        cycle_s = ideal_cycle * mods.cycle_time_mult + rng.normal(0, ideal_cycle * 0.03)
+                        cycle_s = ideal_cycle * mods.cycle_time_mult + rng2.normal(0, ideal_cycle * 0.03)
                         parts_per_hour = max(0, int(3600 / max(cycle_s, 10)))
-                        base_reject = 0.02
-                        reject_rate = base_reject + mods.reject_rate_add
-                        rejects = int(parts_per_hour * reject_rate)
+                        # Realistic base reject rate from loss profile
+                        base_reject = loss_profile["reject_rate"] * line_factor
+                        # Post-stop quality spike
+                        if last_stop_end is not None:
+                            mins_since_stop = (current_hour - last_stop_end).total_seconds() / 60
+                            if 0 <= mins_since_stop < 30:
+                                base_reject *= (1.5 + 1.5 * (1 - mins_since_stop / 30))
+                        reject_rate = base_reject + mods.reject_rate_add + loss_rng.normal(0, 0.005)
+                        reject_rate = max(0.01, min(0.15, reject_rate))
+                        rejects = max(0, int(parts_per_hour * reject_rate))
                         good = parts_per_hour - rejects
                         prod_count_acc += parts_per_hour
                         good_count_acc += good
@@ -457,7 +632,7 @@ def generate_telemetry(rng: np.random.Generator, start_date: date,
 
                         state = "RUN"
                         if mods.micro_stop_prob > 0.1:
-                            state = rng.choice(["RUN", "RUN", "DOWN"]) if rng.random() < mods.micro_stop_prob else "RUN"
+                            state = rng2.choice(["RUN", "RUN", "DOWN"]) if rng2.random() < mods.micro_stop_prob else "RUN"
 
                         all_prod_events.append({
                             "ASSET_ID": aid, "TS": current_hour,
@@ -568,11 +743,225 @@ def generate_production_orders(rng, start_date, num_days, lines) -> list:
     return orders
 
 
+def compute_dry_run_oee(start_date, num_days, shift_calendar, downtime, prod_events, gt_rows):
+    """Compute OEE locally using same formulas as DT_SHIFT_OEE."""
+    from collections import defaultdict
+
+    # Build shift calendar lookup: (shift_date, shift_code) -> (planned_min, planned_downtime_min)
+    cal = {}
+    for _, row in shift_calendar.iterrows():
+        key = (row["SHIFT_DATE"], row["SHIFT_CODE"])
+        cal[key] = {
+            "planned_min": row["PLANNED_MINUTES"],
+            "planned_downtime_min": row["PLANNED_DOWNTIME_MINUTES"],
+            "start_ts": row["START_TS"],
+            "end_ts": row["END_TS"],
+        }
+
+    # Build downtime by (asset_id, shift_date, shift_code) — only unplanned
+    dt_by_shift = defaultdict(float)
+    for dt_evt in downtime:
+        if dt_evt["IS_PLANNED"]:
+            continue
+        dt_start = dt_evt["START_TS"]
+        dt_end = dt_evt["END_TS"]
+        aid = dt_evt["ASSET_ID"]
+        # Allocate downtime to shifts by overlap
+        for (sd, sc), info in cal.items():
+            s_start = info["start_ts"]
+            s_end = info["end_ts"]
+            overlap_start = max(dt_start, s_start)
+            overlap_end = min(dt_end, s_end)
+            if overlap_start < overlap_end:
+                overlap_min = (overlap_end - overlap_start).total_seconds() / 60
+                dt_by_shift[(aid, sd, sc)] += overlap_min
+
+    # Build production by (asset_id, shift_date, shift_code)
+    prod_by_shift = defaultdict(lambda: {"total": 0, "good": 0, "cycle_sum": 0.0, "count": 0})
+    for pe in prod_events:
+        ts = pe["TS"]
+        sd = ts.date() if hasattr(ts, 'date') else date(ts.year, ts.month, ts.day)
+        sc = "A" if ts.hour < 14 else "B"
+        key = (pe["ASSET_ID"], sd, sc)
+        prod_by_shift[key]["total"] += pe["PRODUCED_COUNT"]
+        prod_by_shift[key]["good"] += pe["GOOD_COUNT"]
+        prod_by_shift[key]["cycle_sum"] += pe["CYCLE_TIME_S"]
+        prod_by_shift[key]["count"] += 1
+
+    # Get failure dates for failure-day detection (includes degradation + failure days)
+    # Maps (asset_id, date) -> True for affected asset-days
+    failure_asset_dates = set()
+    failure_dates_all = set()
+    for gt in gt_rows:
+        ft = gt["FAILURE_TS"]
+        ds = gt["DEGRADATION_START_TS"]
+        aid = gt["ASSET_ID"]
+        fd = ft.date() if hasattr(ft, 'date') else date(ft.year, ft.month, ft.day)
+        dd = ds.date() if hasattr(ds, 'date') else date(ds.year, ds.month, ds.day)
+        d = dd
+        while d <= fd:
+            failure_asset_dates.add((aid, d))
+            failure_dates_all.add(d)
+            d += timedelta(days=1)
+
+    # Compute per-shift OEE for each producing asset
+    producing_assets = {a["asset_id"] for a in ASSETS if a.get("ideal_cycle_s") is not None}
+    ideal_cycles = {a["asset_id"]: a["ideal_cycle_s"] for a in ASSETS if a.get("ideal_cycle_s")}
+
+    results = []
+    for (sd, sc), info in cal.items():
+        planned_prod_min = info["planned_min"] - info["planned_downtime_min"]
+        if planned_prod_min <= 0:
+            continue
+        for aid in producing_assets:
+            udt = dt_by_shift.get((aid, sd, sc), 0)
+            run_min = max(0, planned_prod_min - udt)
+            p = prod_by_shift.get((aid, sd, sc))
+
+            # If asset has no run time or no production, OEE = 0
+            if run_min == 0 or p is None or p["total"] == 0:
+                avail = run_min / planned_prod_min
+                is_fail = (aid, sd) in failure_asset_dates
+                results.append({
+                    "line_id": ASSET_MAP[aid]["line_id"], "asset_id": aid,
+                    "shift_date": sd, "shift_code": sc,
+                    "availability": avail, "performance": 0.0,
+                    "quality": 0.0, "oee": 0.0,
+                    "is_failure_day": is_fail,
+                })
+                continue
+
+            ideal_s = ideal_cycles[aid]
+            run_sec = run_min * 60
+
+            avail = run_min / planned_prod_min
+            perf = min(1.0, (ideal_s * p["total"]) / run_sec)
+            qual = p["good"] / p["total"]
+            oee = avail * perf * qual
+
+            is_fail = (aid, sd) in failure_asset_dates
+            line = ASSET_MAP[aid]["line_id"]
+            results.append({
+                "line_id": line, "asset_id": aid, "shift_date": sd,
+                "shift_code": sc, "availability": avail, "performance": perf,
+                "quality": qual, "oee": oee, "is_failure_day": is_fail,
+            })
+
+    return results
+
+
+def print_dry_run_report(oee_results, telemetry, downtime, maintenance, prod_events,
+                         orders, gt_rows, hard_negs):
+    """Print dry-run OEE summary and structural counts."""
+    if not oee_results:
+        print("ERROR: No OEE results computed")
+        return
+
+    import statistics
+
+    all_a = [r["availability"] for r in oee_results]
+    all_p = [r["performance"] for r in oee_results]
+    all_q = [r["quality"] for r in oee_results]
+    all_oee = [r["oee"] for r in oee_results]
+
+    healthy = [r for r in oee_results if not r["is_failure_day"]]
+    failure = [r for r in oee_results if r["is_failure_day"]]
+
+    healthy_oee = [r["oee"] for r in healthy] if healthy else [0]
+    failure_oee = [r["oee"] for r in failure] if failure else [0]
+
+    # Per-line averages
+    lines = sorted(set(r["line_id"] for r in oee_results))
+    line_stats = {}
+    for line in lines:
+        lr = [r for r in oee_results if r["line_id"] == line]
+        line_stats[line] = {
+            "A": statistics.mean([r["availability"] for r in lr]),
+            "P": statistics.mean([r["performance"] for r in lr]),
+            "Q": statistics.mean([r["quality"] for r in lr]),
+            "OEE": statistics.mean([r["oee"] for r in lr]),
+        }
+
+    # Count minor stops (failure_mode is None)
+    minor_stops = [d for d in downtime if d.get("FAILURE_MODE") is None]
+    failure_stops = [d for d in downtime if d.get("FAILURE_MODE") is not None]
+
+    print("\n" + "=" * 60)
+    print("DRY-RUN OEE REPORT")
+    print("=" * 60)
+
+    print(f"\n--- Row Counts ---")
+    print(f"  Telemetry rows:       {len(telemetry):,}")
+    print(f"  Downtime events:      {len(downtime)} (failure: {len(failure_stops)}, minor: {len(minor_stops)})")
+    print(f"  Maintenance records:  {len(maintenance)}")
+    print(f"  Production events:    {len(prod_events):,}")
+    print(f"  Production orders:    {len(orders)}")
+    print(f"  Ground truth:         {len(gt_rows)}")
+    print(f"  Hard negatives:       {len(hard_negs)}")
+    print(f"  Parts inventory:      {len(PARTS)}")
+    print(f"  Failure-mode parts:   {len(FAILURE_MODE_PARTS_MAP)}")
+
+    print(f"\n--- Plant-Wide OEE (all {len(oee_results)} asset-shifts) ---")
+    print(f"  Availability:  {statistics.mean(all_a):.4f}  (target 0.85–0.93)")
+    print(f"  Performance:   {statistics.mean(all_p):.4f}  (target 0.80–0.92)")
+    print(f"  Quality:       {statistics.mean(all_q):.4f}  (target 0.94–0.98)")
+    print(f"  OEE:           {statistics.mean(all_oee):.4f}  (target 0.62–0.80)")
+
+    print(f"\n--- Per-Line OEE ---")
+    for line, s in line_stats.items():
+        print(f"  {line}: A={s['A']:.4f} P={s['P']:.4f} Q={s['Q']:.4f} OEE={s['OEE']:.4f}")
+
+    print(f"\n--- Failure-Day Dip ---")
+    print(f"  Healthy-day OEE avg:  {statistics.mean(healthy_oee):.4f}")
+    print(f"  Failure-day OEE avg:  {statistics.mean(failure_oee):.4f}")
+    dip = statistics.mean(healthy_oee) - statistics.mean(failure_oee)
+    print(f"  Dip:                  {dip:.4f}  (target >= 0.08)")
+
+    # Invariant checks
+    print(f"\n--- Invariants ---")
+    bad_range = sum(1 for r in oee_results if r["oee"] < 0 or r["oee"] > 1)
+    bad_gc = sum(1 for r in oee_results if r["quality"] > 1.0001)
+    print(f"  OEE outside [0,1]:    {bad_range}")
+    print(f"  Quality > 1:          {bad_gc}")
+
+    # Pass/fail summary
+    avg_a = statistics.mean(all_a)
+    avg_p = statistics.mean(all_p)
+    avg_q = statistics.mean(all_q)
+    avg_oee = statistics.mean(all_oee)
+
+    checks = [
+        ("Availability 0.85-0.93", 0.85 <= avg_a <= 0.93),
+        ("Performance 0.80-0.92", 0.80 <= avg_p <= 0.92),
+        ("Quality 0.94-0.98", 0.94 <= avg_q <= 0.98),
+        ("OEE 0.62-0.80", 0.62 <= avg_oee <= 0.80),
+        ("Failure dip >= 0.08", dip >= 0.08),
+        ("Telemetry ±2% of 717862", abs(len(telemetry) - 717862) / 717862 <= 0.02),
+        ("10 ground truth failures", len(gt_rows) == 10),
+        (">=4 hard negatives", len(hard_negs) >= 4),
+        ("30 parts", len(PARTS) == 30),
+        ("41 failure-mode-parts", len(FAILURE_MODE_PARTS_MAP) == 41),
+    ]
+
+    print(f"\n--- Acceptance Checks ---")
+    all_pass = True
+    for name, ok in checks:
+        status = "PASS" if ok else "FAIL"
+        if not ok:
+            all_pass = False
+        print(f"  [{status}] {name}")
+
+    print(f"\n{'ALL CHECKS PASSED' if all_pass else 'SOME CHECKS FAILED'}")
+    print("=" * 60)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--seed", type=int, default=SEED)
     parser.add_argument("--conn", type=str, default=os.environ.get("COCO_CONN", "aegis"))
     parser.add_argument("--days", type=int, default=NUM_DAYS)
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Generate in memory only, print OEE stats, no Snowflake connection")
     args = parser.parse_args()
 
     rng = np.random.default_rng(args.seed)
@@ -581,30 +970,17 @@ def main():
     start_date = yesterday - timedelta(days=args.days - 1)
     print(f"=== AegisOEE Backfill ===")
     print(f"Seed: {args.seed}, Days: {args.days}, Range: {start_date} to {yesterday}")
-    print(f"Connection: {args.conn}")
+    if args.dry_run:
+        print("Mode: DRY RUN (no Snowflake connection)")
+    else:
+        print(f"Connection: {args.conn}")
 
     t_start = time.time()
 
-    print("\nConnecting to Snowflake...")
-    session = get_snowpark_session(args.conn)
-    session.sql("USE DATABASE AEGIS_OEE").collect()
-    session.sql("USE WAREHOUSE AEGIS_WH").collect()
-
-    # ── 1. Load assets ──
-    print("\n[1/8] Loading CORE.ASSET...")
-    df_assets = pd.DataFrame(ASSETS)
-    df_assets.columns = [c.upper() for c in df_assets.columns]
-    session.sql("TRUNCATE TABLE IF EXISTS AEGIS_OEE.CORE.ASSET").collect()
-    load_df(session, df_assets, "CORE.ASSET", mode="overwrite")
-
-    # ── 2. Shift calendar ──
-    print("\n[2/8] Loading CORE.SHIFT_CALENDAR...")
+    # Generate shift calendar
     df_cal = generate_shift_calendar(start_date, args.days)
-    session.sql("TRUNCATE TABLE IF EXISTS AEGIS_OEE.CORE.SHIFT_CALENDAR").collect()
-    load_df(session, df_cal, "CORE.SHIFT_CALENDAR", mode="overwrite")
 
-    # ── 3. Ground truth failures ──
-    print("\n[3/8] Loading TEST.GROUND_TRUTH_FAILURES...")
+    # Ground truth
     start_dt = datetime(start_date.year, start_date.month, start_date.day, 0, 0, tzinfo=IST)
     gt_rows = []
     for ep in FAILURE_EPISODES:
@@ -616,33 +992,72 @@ def main():
             "FAILURE_TS": start_dt + timedelta(days=ep["fail_day"]),
             "SEVERITY": ep["severity"],
         })
+
+    # Production orders
+    orders = generate_production_orders(rng, start_date, args.days, ["LINE_1", "LINE_2"])
+
+    # Generate telemetry + correlated events
+    print("\nGenerating telemetry (this takes a while)...")
+    telemetry, downtime, maintenance, prod_events = generate_telemetry(
+        rng, start_date, args.days, ASSETS, FAILURE_EPISODES, HARD_NEGATIVES,
+        seed=args.seed
+    )
+
+    elapsed = time.time() - t_start
+    print(f"\nGeneration complete in {elapsed:.0f}s")
+    print(f"  Telemetry rows:     {len(telemetry):,}")
+    print(f"  Downtime events:    {len(downtime)}")
+    print(f"  Maintenance records:{len(maintenance)}")
+    print(f"  Production events:  {len(prod_events):,}")
+    print(f"  Production orders:  {len(orders)}")
+    print(f"  Ground truth:       {len(gt_rows)}")
+    print(f"  Parts inventory:    {len(PARTS)}")
+    print(f"  Failure-mode parts: {len(FAILURE_MODE_PARTS_MAP)}")
+
+    if args.dry_run:
+        oee_results = compute_dry_run_oee(
+            start_date, args.days, df_cal, downtime, prod_events, gt_rows
+        )
+        print_dry_run_report(
+            oee_results, telemetry, downtime, maintenance, prod_events,
+            orders, gt_rows, HARD_NEGATIVES
+        )
+        return
+
+    # ── Load to Snowflake ──
+    print("\nConnecting to Snowflake...")
+    session = get_snowpark_session(args.conn)
+    session.sql("USE DATABASE AEGIS_OEE").collect()
+    session.sql("USE WAREHOUSE AEGIS_WH").collect()
+
+    print("\n[1/8] Loading CORE.ASSET...")
+    df_assets = pd.DataFrame(ASSETS)
+    df_assets.columns = [c.upper() for c in df_assets.columns]
+    session.sql("TRUNCATE TABLE IF EXISTS AEGIS_OEE.CORE.ASSET").collect()
+    load_df(session, df_assets, "CORE.ASSET", mode="overwrite")
+
+    print("\n[2/8] Loading CORE.SHIFT_CALENDAR...")
+    session.sql("TRUNCATE TABLE IF EXISTS AEGIS_OEE.CORE.SHIFT_CALENDAR").collect()
+    load_df(session, df_cal, "CORE.SHIFT_CALENDAR", mode="overwrite")
+
+    print("\n[3/8] Loading TEST.GROUND_TRUTH_FAILURES...")
     df_gt = pd.DataFrame(gt_rows)
     session.sql("TRUNCATE TABLE IF EXISTS AEGIS_OEE.TEST.GROUND_TRUTH_FAILURES").collect()
     load_df(session, df_gt, "TEST.GROUND_TRUTH_FAILURES", mode="overwrite")
 
-    # ── 4. Production orders ──
     print("\n[4/8] Loading CORE.PRODUCTION_ORDER...")
-    orders = generate_production_orders(rng, start_date, args.days, ["LINE_1", "LINE_2"])
     df_orders = pd.DataFrame(orders)
     session.sql("TRUNCATE TABLE IF EXISTS AEGIS_OEE.CORE.PRODUCTION_ORDER").collect()
     load_df(session, df_orders, "CORE.PRODUCTION_ORDER", mode="overwrite")
 
-    # ── 5. Generate telemetry + correlated events ──
-    print("\n[5/8] Generating telemetry (this takes a while)...")
-    telemetry, downtime, maintenance, prod_events = generate_telemetry(
-        rng, start_date, args.days, ASSETS, FAILURE_EPISODES, HARD_NEGATIVES
-    )
-
-    # ── 6. Load telemetry in batches ──
-    print(f"\n[6/8] Loading RAW.SENSOR_TELEMETRY ({len(telemetry):,} rows)...")
+    print(f"\n[5/8] Loading RAW.SENSOR_TELEMETRY ({len(telemetry):,} rows)...")
     session.sql("TRUNCATE TABLE IF EXISTS AEGIS_OEE.RAW.SENSOR_TELEMETRY").collect()
     df_telem = pd.DataFrame(telemetry)
     for i in range(0, len(df_telem), BATCH_SIZE):
         batch = df_telem.iloc[i:i+BATCH_SIZE]
         load_df(session, batch, "RAW.SENSOR_TELEMETRY")
 
-    # ── 7. Load downtime, maintenance, production events ──
-    print(f"\n[7/8] Loading correlated tables...")
+    print(f"\n[6/8] Loading correlated tables...")
     session.sql("TRUNCATE TABLE IF EXISTS AEGIS_OEE.CORE.DOWNTIME_EVENT").collect()
     if downtime:
         load_df(session, pd.DataFrame(downtime), "CORE.DOWNTIME_EVENT", mode="overwrite")
@@ -655,8 +1070,7 @@ def main():
     if prod_events:
         load_df(session, pd.DataFrame(prod_events), "RAW.PRODUCTION_EVENT", mode="overwrite")
 
-    # ── 8. MRO parts data ──
-    print(f"\n[8/8] Loading MRO parts data...")
+    print(f"\n[7/8] Loading MRO parts data...")
     session.sql("TRUNCATE TABLE IF EXISTS AEGIS_OEE.CORE.PARTS_INVENTORY").collect()
     df_parts = pd.DataFrame(PARTS)
     df_parts.columns = [c.upper() for c in df_parts.columns]
@@ -667,17 +1081,7 @@ def main():
     df_fmp.columns = [c.upper() for c in df_fmp.columns]
     load_df(session, df_fmp, "CORE.FAILURE_MODE_PARTS", mode="overwrite")
 
-    elapsed = time.time() - t_start
-    print(f"\n=== Backfill complete in {elapsed:.0f}s ===")
-    print(f"  Telemetry rows:     {len(telemetry):,}")
-    print(f"  Downtime events:    {len(downtime)}")
-    print(f"  Maintenance records:{len(maintenance)}")
-    print(f"  Production events:  {len(prod_events):,}")
-    print(f"  Production orders:  {len(orders)}")
-    print(f"  Ground truth:       {len(gt_rows)}")
-    print(f"  Parts inventory:    {len(PARTS)}")
-    print(f"  Failure-mode parts: {len(FAILURE_MODE_PARTS_MAP)}")
-
+    print(f"\n=== Backfill complete ===")
     session.close()
 
 

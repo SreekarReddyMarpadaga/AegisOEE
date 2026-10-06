@@ -30,7 +30,7 @@ WITH episodes AS (
     g.FAILURE_TS,
     g.SEVERITY
   FROM TEST.GROUND_TRUTH_FAILURES g
-  WHERE g.DEGRADATION_START_TS >= '2026-07-15'::TIMESTAMP_TZ
+  WHERE g.DEGRADATION_START_TS >= (SELECT DATEADD('day', 7, MIN(START_TS)) FROM CORE.SHIFT_CALENDAR)
 ),
 ml_detections AS (
   SELECT
@@ -184,7 +184,7 @@ DELETE FROM TEST.ML_METRICS;
 -- ML model metrics (out-of-sample episodes only)
 INSERT INTO TEST.ML_METRICS (METRIC_NAME, METRIC_VALUE, DETAIL)
 SELECT 'ml_recall', SUM(CASE WHEN detected THEN 1 ELSE 0 END)::FLOAT / COUNT(*),
-       'ML anomaly detection recall (episodes >= 2026-07-15)'
+       'ML anomaly detection recall (episodes after training window)'
 FROM TEST.TMP_EPISODE_EVAL;
 
 INSERT INTO TEST.ML_METRICS (METRIC_NAME, METRIC_VALUE, DETAIL)
@@ -236,13 +236,13 @@ SELECT 'ml_false_alerts_per_asset_day',
     SELECT COUNT(DISTINCT ASSET_ID) * COUNT(DISTINCT TS::DATE)
     FROM ML.ANOMALY_EVENTS
     WHERE SERIES_NAME IN ('vibration_rms','temp_c','rpm')
-      AND TS >= '2026-07-15'::TIMESTAMP_TZ
+      AND TS >= (SELECT DATEADD('day', 7, MIN(START_TS)) FROM CORE.SHIFT_CALENDAR)
   ),
   'False anomaly alerts not overlapping any ground truth episode'
 FROM ML.ANOMALY_EVENTS a
 WHERE a.IS_ANOMALY = TRUE
   AND a.SERIES_NAME IN ('vibration_rms','temp_c','rpm')
-  AND a.TS >= '2026-07-15'::TIMESTAMP_TZ
+      AND a.TS >= (SELECT DATEADD('day', 7, MIN(START_TS)) FROM CORE.SHIFT_CALENDAR)
   AND NOT EXISTS (
     SELECT 1 FROM TEST.GROUND_TRUTH_FAILURES g
     WHERE g.ASSET_ID = a.ASSET_ID

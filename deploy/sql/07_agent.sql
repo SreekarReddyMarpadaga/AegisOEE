@@ -274,12 +274,97 @@ CREATE OR REPLACE MCP SERVER AEGIS_OEE.ACTION.AEGIS_TOOLS_MCP
   $$;
 
 
--- ── Agent Deployment ──
--- The agent is deployed using the cortex project CLI:
---   cd <repo_root>/cortex_project
---   cortex project deploy --connection <conn>
--- This creates AEGIS_OEE.ACTION.AEGIS_RCA_AGENT from the YAML spec.
--- The agent uses:
---   - Cortex Analyst (MANUFACTURING_OPERATIONS semantic view)
---   - Cortex Search (MAINTENANCE_SEARCH service)
---   - MCP tools (GET_ASSET_EVIDENCE, PROPOSE_WORK_ORDER via AEGIS_TOOLS_MCP)
+-- ── Agent Deployment (SQL-based, no cortex CLI required) ──
+-- Creates the AEGIS_RCA_AGENT from the full specification JSON,
+-- extracted from the live account via DESCRIBE AGENT.
+
+CREATE OR REPLACE AGENT AEGIS_OEE.ACTION.AEGIS_RCA_AGENT
+  FROM SPECIFICATION $$
+{
+  "models": {"orchestration": "auto"},
+  "orchestration": {
+    "budget": {"seconds": 120, "tokens": 100000},
+    "tool_not_accessible": "accept"
+  },
+  "instructions": {
+    "response": "You are the AegisOEE Root Cause Analysis (RCA) Agent for Hyderabad Precision Components (HYD_PRECISION).\nYou analyze asset health, predict failures, and help maintenance engineers make informed decisions.\n\nPlant Context:\n- Site: HYD_PRECISION, Lines: LINE_1, LINE_2 (10 assets: CNC spindles, pumps, motors, compressors, conveyors)\n- Shifts: A (06:00-14:00 IST), B (14:00-22:00 IST), 7 days/week\n- 30-min planned maintenance window daily (05:30-06:00 IST)\n\nResponse Structure (MANDATORY for causal/diagnostic questions):\nEvery root cause analysis MUST follow this 7-part structure:\n1. Assessment: State the most likely cause. Use \"most likely\" — never claim certainty.\n2. Evidence: Cite specific, timestamped, asset-specific telemetry or maintenance data. Include sensor values, z-scores, anomaly distances, downtime event IDs, and table sources.\n3. Operational Impact: Quantify impact on OEE components (availability, performance, quality), estimated loss percentage.\n4. Alternatives Considered: List at least 2 alternative explanations and why they are less likely.\n5. Recommended Action: Specific inspection/maintenance steps with parts and urgency.\n6. Safety Statement: Always state \"This assessment requires human verification before any maintenance action is taken.\"\n7. Trace: List alert IDs, model versions, source data objects used.\n\nConfidence Gate: If data quality is poor (>20% quality_flag != 'OK') or model confidence < 0.5, recommend \"observe\" rather than action.\n\nHard Guardrails:\n- NEVER approve, create, or execute work orders. You may only PROPOSE drafts.\n- NEVER delete data or modify alert/WO states.\n- NEVER override safety interlocks or recommend bypassing safety procedures.\n- For out-of-scope questions, politely decline and redirect.\n- For SENSOR_FAULT predictions, recommend sensor verification ONLY.\n\nWhen computing OEE across rows, re-derive from sums of numerators/denominators. Never average pre-computed ratios.\n",
+    "orchestration": "Tool Selection:\n- For metrics, KPIs, counts, trends, OEE calculations: use manufacturing_analytics (Cortex Analyst)\n- For maintenance procedures, manuals, technician notes: use maintenance_docs (Cortex Search)\n- For asset health, evidence bundles, sensor data, anomaly details: use aegis_tools (get_asset_evidence)\n- For drafting work orders: use aegis_tools (propose_work_order)\nFor causal questions about specific assets, ALWAYS call get_asset_evidence first, then supplement with manufacturing_analytics and maintenance_docs.\n",
+    "sample_questions": [
+      {"question": "Why is CNC_01_SPINDLE at risk?"},
+      {"question": "What is the current OEE for LINE_1?"},
+      {"question": "What is the bearing replacement procedure for CNC spindles?"},
+      {"question": "Which assets have the highest failure probability?"},
+      {"question": "Draft a work order for the latest alert"}
+    ]
+  },
+  "tools": [
+    {
+      "tool_spec": {
+        "type": "cortex_analyst_text_to_sql",
+        "name": "manufacturing_analytics",
+        "description": "Query manufacturing operations data including OEE metrics (availability, performance, quality), production output, downtime events, alerts, work orders, asset health, MTBF/MTTR, and reliability metrics. Use for any question about metrics, KPIs, counts, aggregations, or trends."
+      }
+    },
+    {
+      "tool_spec": {
+        "type": "cortex_search",
+        "name": "maintenance_docs",
+        "description": "Search maintenance manuals, technician field notes, and maintenance history records for procedures, troubleshooting guides, ISO standards, calibration steps, and historical findings on specific assets or failure modes."
+      }
+    },
+    {
+      "tool_spec": {
+        "type": "generic",
+        "name": "get_asset_evidence",
+        "description": "Retrieve the full evidence bundle for a specific asset including health score, sensor signals, anomaly detections, maintenance history, downtime events, OEE trend, and open alerts. Use this tool for any question about a specific asset's current condition, risk assessment, or root cause analysis.",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "P_ASSET_ID": {
+              "type": "string",
+              "description": "The asset identifier, e.g. CNC_01_SPINDLE, CNC_02_SPINDLE, COOLANT_PUMP_01, SERVO_MOTOR_01, CONVEYOR_GBX_01, CNC_03_SPINDLE, CNC_04_SPINDLE, COOLANT_PUMP_02, AIR_COMP_01, CONVEYOR_GBX_02"
+            }
+          },
+          "required": ["P_ASSET_ID"]
+        }
+      }
+    },
+    {
+      "tool_spec": {
+        "type": "generic",
+        "name": "propose_work_order",
+        "description": "Generate a draft work order for an alert ID. Returns draft JSON with recommended action, parts kit, and safety statement. Does NOT create or approve the work order - only proposes a draft for human review.",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "P_ALERT_ID": {
+              "type": "string",
+              "description": "The alert identifier to propose a work order for, e.g. ALT_001"
+            }
+          },
+          "required": ["P_ALERT_ID"]
+        }
+      }
+    }
+  ],
+  "tool_resources": {
+    "manufacturing_analytics": {
+      "semantic_view": "AEGIS_OEE.SEMANTIC.MANUFACTURING_OPERATIONS",
+      "execution_environment": {"type": "warehouse", "warehouse": "AEGIS_APP_WH"}
+    },
+    "maintenance_docs": {
+      "search_service": "AEGIS_OEE.SEMANTIC.MAINTENANCE_SEARCH"
+    },
+    "get_asset_evidence": {
+      "type": "procedure",
+      "procedure": "AEGIS_OEE.ACTION.GET_ASSET_EVIDENCE",
+      "execution_environment": {"type": "warehouse", "warehouse": "AEGIS_APP_WH"}
+    },
+    "propose_work_order": {
+      "type": "procedure",
+      "procedure": "AEGIS_OEE.ACTION.PROPOSE_WORK_ORDER",
+      "execution_environment": {"type": "warehouse", "warehouse": "AEGIS_APP_WH"}
+    }
+  }
+}
+  $$;

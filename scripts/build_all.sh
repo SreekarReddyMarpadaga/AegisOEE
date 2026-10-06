@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
-# One-command build: runs CoCo missions 00→06 headlessly; stops on first failure.
+# One-command build: runs CoCo missions 00→07 headlessly; stops on first failure.
+# Reproducibility contract: each mission checks whether its artifacts already exist
+# in the repo and executes/validates them instead of regenerating. Regenerate or
+# edit only when a check fails. See AGENTS.md "Reproducibility contract" section.
 set -u
 CONN="${COCO_CONN:-aegis}"
 MODEL="${COCO_MODEL:-auto}"
 LOG_DIR="docs/runs"
 mkdir -p "$LOG_DIR"
+
+# Reproducibility preamble: passed to every mission via --bypass
+export AEGIS_REPRODUCIBILITY_CONTRACT="true"
 
 MISSIONS=(
   "prompts/00_foundation.md"
@@ -14,6 +20,7 @@ MISSIONS=(
   "prompts/04_semantics_agent.md"
   "prompts/05_action_loop.md"
   "prompts/06_app.md"
+  "prompts/07_cmms_shift_planning.md"
 )
 
 for m in "${MISSIONS[@]}"; do

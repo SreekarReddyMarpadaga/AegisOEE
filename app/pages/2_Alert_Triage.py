@@ -56,7 +56,7 @@ for idx, row in alerts_df.iterrows():
         # Actions
         act_cols = st.columns(3)
         with act_cols[0]:
-            if status == "NEW":
+            if status in ("NEW", "TRIAGED"):
                 if st.button("Acknowledge", key=f"ack_{alert_id}"):
                     try:
                         session = get_session()
@@ -67,9 +67,12 @@ for idx, row in alerts_df.iterrows():
                         """).collect()
                         write_audit(session, "APP_USER", "ALERT_ACKED", alert_id)
                         st.success(f"Alert {alert_id} acknowledged.")
-                        st.rerun()
                     except Exception as e:
                         st.error(f"Error: {e}")
+                    else:
+                        st.rerun()
+            elif status == "ACKED":
+                st.success("Acknowledged — proceed to Work Order Review")
             else:
                 st.info(f"Status: {status}")
 
@@ -100,6 +103,7 @@ for idx, row in alerts_df.iterrows():
                             '{"reason":"' + safe_reason + '"}'
                         )
                         st.success(f"Alert {alert_id} suppressed.")
-                        st.rerun()
                     except Exception as e:
                         st.error(f"Error: {e}")
+                    else:
+                        st.rerun()

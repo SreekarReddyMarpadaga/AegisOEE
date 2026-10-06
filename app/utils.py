@@ -172,9 +172,22 @@ def get_session():
     return get_active_session()
 
 
-def run_query(sql, ttl=300):
+@st.cache_data(ttl=30)
+def _query_live(sql):
     session = get_active_session()
     return session.sql(sql).to_pandas()
+
+
+@st.cache_data(ttl=300)
+def _query_standard(sql):
+    session = get_active_session()
+    return session.sql(sql).to_pandas()
+
+
+def run_query(sql, ttl=300):
+    if ttl <= 30:
+        return _query_live(sql)
+    return _query_standard(sql)
 
 
 def apply_theme():

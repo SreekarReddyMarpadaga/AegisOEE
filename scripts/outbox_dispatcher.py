@@ -3,10 +3,10 @@
 dispatches via GitHub API / Slack webhook, and closes GitHub issues for
 CLOSED/REJECTED work orders."""
 
-import json, os, subprocess, sys, re
+import json, os, subprocess, sys, re, time
 
-CONN = "aegis"
-GITHUB_REPO = "SreekarReddyMarpadaga/AegisOEE"
+CONN = os.environ.get("COCO_CONN", "aegis")
+GITHUB_REPO = os.environ.get("GITHUB_REPO", "")  # owner/repo that receives the issues
 
 def snow_sql(sql):
     subprocess.run(["snow", "sql", "--connection", CONN, "-q", sql],
@@ -382,6 +382,8 @@ def sync_github_status(github_pat):
 def main():
     github_pat = os.environ.get("GITHUB_PAT", "")
     slack_url = os.environ.get("SLACK_WEBHOOK_URL", "")
+    if github_pat and not GITHUB_REPO:
+        sys.exit("GITHUB_PAT is set but GITHUB_REPO (owner/repo) is not.")
 
     dispatch_pending(github_pat, slack_url)
     close_github_issues(github_pat)
@@ -390,4 +392,9 @@ def main():
     dispatch_pending("", slack_url)
 
 if __name__ == "__main__":
-    main()
+    interval = int(os.environ.get("DISPATCH_INTERVAL_S", "0"))  # 0 = run once
+    while True:
+        main()
+        if interval <= 0:
+            break
+        time.sleep(interval)

@@ -199,39 +199,34 @@ LEFT JOIN asset_failures af ON a.asset_id = af.asset_id;
 --    Loss waterfall: breakdown + speed + quality + productive = planned.
 -- -------------------------------------------------------
 CREATE OR REPLACE VIEW SEMANTIC.V_SIX_BIG_LOSSES AS
+WITH base AS (
+  SELECT
+    line_id, asset_id, shift_date, shift_code, planned_min,
+    downtime_min, run_min, total_count, good_count, reject_count,
+    ideal_cycle_s, availability, performance, quality, oee,
+    -- Net operating time: how much of run_min was used producing units
+    LEAST(run_min, ideal_cycle_s * total_count / 60.0) AS net_operating_min
+  FROM SEMANTIC.DT_SHIFT_OEE
+  WHERE ideal_cycle_s IS NOT NULL AND total_count > 0
+)
 SELECT
-  line_id,
-  asset_id,
-  shift_date,
-  shift_code,
-  planned_min,
-  -- Availability losses
-  downtime_min                                                       AS breakdown_loss_min,
-  -- Performance losses (speed loss = run time unused productively)
-  CASE WHEN run_min > 0 AND ideal_cycle_s IS NOT NULL AND total_count > 0
-    THEN GREATEST(0, run_min - LEAST(run_min, ideal_cycle_s * total_count / 60.0))
+  line_id, asset_id, shift_date, shift_code, planned_min,
+  -- Availability losses = downtime
+  downtime_min                                              AS breakdown_loss_min,
+  -- Speed losses = run_min - net_operating_min
+  (run_min - net_operating_min)                             AS speed_loss_min,
+  -- Quality losses = proportion of net_operating lost to rejects
+  CASE WHEN total_count > 0
+    THEN net_operating_min * (reject_count::FLOAT / total_count)
     ELSE 0
-  END                                                                AS speed_loss_min,
-  -- Quality losses (reject time)
-  CASE WHEN total_count > 0 AND ideal_cycle_s IS NOT NULL
-    THEN (total_count - good_count) * ideal_cycle_s / 60.0
+  END                                                       AS quality_loss_min,
+  -- Fully productive = net_operating * quality ratio
+  CASE WHEN total_count > 0
+    THEN net_operating_min * (good_count::FLOAT / total_count)
     ELSE 0
-  END                                                                AS quality_loss_min,
-  -- Fully productive time
-  CASE WHEN total_count > 0 AND ideal_cycle_s IS NOT NULL
-    THEN LEAST(
-      GREATEST(0, run_min - GREATEST(0, run_min - ideal_cycle_s * total_count / 60.0)),
-      good_count * ideal_cycle_s / 60.0
-    )
-    ELSE 0
-  END                                                                AS fully_productive_min,
-  run_min,
-  availability,
-  performance,
-  quality,
-  oee
-FROM SEMANTIC.DT_SHIFT_OEE
-WHERE ideal_cycle_s IS NOT NULL;
+  END                                                       AS fully_productive_min,
+  run_min, availability, performance, quality, oee
+FROM base;
 
 -- -------------------------------------------------------
 -- 5. FEATURES.DT_ASSET_HEALTH (v1 — rule-based)

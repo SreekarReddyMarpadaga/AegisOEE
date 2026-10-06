@@ -11,9 +11,17 @@ logs/
 *.log
 .cortex/hooks/tool-log.jsonl
 docs/runs/
+snapshots/
+aegis_snapshots/
+internal/
+submission/
 .streamlit/secrets.toml
 connections.toml
 *.pem
 *.p8
 token*.txt
 .DS_Store
+
+# operator-only / local planning artifacts
+prompts/ops_*.md
+.cortex/plans/

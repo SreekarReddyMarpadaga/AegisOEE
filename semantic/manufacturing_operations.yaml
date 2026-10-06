@@ -647,6 +647,174 @@ tables:
           - mean time to repair
           - repair time
 
+  # ── DIM: Shift Plan ──────────────────────────────────────────
+  - name: SHIFT_PLAN
+    description: >
+      Forward production shift plan (14-day rolling horizon). Each row = one line in one shift.
+      Shows planned production quantities, run minutes, and order assignments.
+      Status: PLANNED (editable) or FROZEN (locked for execution).
+    base_table:
+      database: AEGIS_OEE
+      schema: CORE
+      table: SHIFT_PLAN
+    dimensions:
+      - name: PLAN_ID
+        description: Unique shift plan identifier
+        expr: PLAN_ID
+        data_type: VARCHAR
+      - name: SP_SHIFT_CODE
+        description: "Shift code: A (06:00-14:00) or B (14:00-22:00)"
+        expr: SHIFT_CODE
+        data_type: VARCHAR
+      - name: SP_LINE_ID
+        description: Production line (LINE_1 or LINE_2)
+        expr: LINE_ID
+        data_type: VARCHAR
+      - name: SP_ORDER_ID
+        description: Production order assigned to this shift
+        expr: ORDER_ID
+        data_type: VARCHAR
+      - name: SP_STATUS
+        description: "Plan status: PLANNED or FROZEN"
+        expr: STATUS
+        data_type: VARCHAR
+    time_dimensions:
+      - name: PLAN_DATE
+        description: Planned production date
+        expr: PLAN_DATE
+        data_type: DATE
+      - name: SP_PLANNED_START_TS
+        description: Shift start timestamp
+        expr: PLANNED_START_TS
+        data_type: TIMESTAMP_TZ
+      - name: SP_PLANNED_END_TS
+        description: Shift end timestamp
+        expr: PLANNED_END_TS
+        data_type: TIMESTAMP_TZ
+    facts:
+      - name: SP_PLANNED_QTY
+        description: Planned production quantity for this shift
+        expr: PLANNED_QTY
+        data_type: NUMBER
+      - name: PLANNED_RUN_MIN
+        description: Planned production run minutes (shift minus planned downtime)
+        expr: PLANNED_RUN_MIN
+        data_type: NUMBER
+
+  # ── DIM: Maintenance Windows ──────────────────────────────────
+  - name: MAINTENANCE_WINDOW
+    description: >
+      Available maintenance windows in the forward plan. Includes daily PM (05:30-06:00 IST),
+      changeovers, weekly non-production blocks, and planned shutdowns.
+      Windows are line-scoped. ASSET_ID is NULL for line-wide windows.
+      BOOKED_MIN tracks capacity consumed by scheduled work orders.
+    base_table:
+      database: AEGIS_OEE
+      schema: CORE
+      table: MAINTENANCE_WINDOW
+    dimensions:
+      - name: WINDOW_ID
+        description: Unique window identifier
+        expr: WINDOW_ID
+        data_type: VARCHAR
+      - name: MW_LINE_ID
+        description: Production line this window applies to
+        expr: LINE_ID
+        data_type: VARCHAR
+      - name: MW_ASSET_ID
+        description: Specific asset (NULL = line-wide window)
+        expr: ASSET_ID
+        data_type: VARCHAR
+      - name: WINDOW_TYPE
+        description: "Type: DAILY_PM, CHANGEOVER, NON_PRODUCTION, SHUTDOWN"
+        expr: WINDOW_TYPE
+        data_type: VARCHAR
+        synonyms:
+          - maintenance type
+          - window category
+      - name: MW_STATUS
+        description: "OPEN or BOOKED"
+        expr: STATUS
+        data_type: VARCHAR
+    time_dimensions:
+      - name: WINDOW_START_TS
+        description: Window start time
+        expr: WINDOW_START_TS
+        data_type: TIMESTAMP_TZ
+      - name: WINDOW_END_TS
+        description: Window end time
+        expr: WINDOW_END_TS
+        data_type: TIMESTAMP_TZ
+    facts:
+      - name: CAPACITY_MIN
+        description: Total capacity of the window in minutes
+        expr: CAPACITY_MIN
+        data_type: NUMBER
+      - name: BOOKED_MIN
+        description: Minutes already booked by scheduled work orders
+        expr: BOOKED_MIN
+        data_type: NUMBER
+
+  # ── FACT: WO Schedule ──────────────────────────────────────────
+  - name: WO_SCHEDULE
+    description: >
+      Work order scheduling assignments. Links approved work orders to maintenance windows.
+      Status: TENTATIVE (auto-booked), CONFIRMED (human-confirmed), EXPEDITE (parts delay risk), CANCELLED.
+      Includes parts ready date and order-by date for procurement coordination.
+    base_table:
+      database: AEGIS_OEE
+      schema: ACTION
+      table: WO_SCHEDULE
+    dimensions:
+      - name: SCHEDULE_ID
+        description: Unique schedule identifier
+        expr: SCHEDULE_ID
+        data_type: VARCHAR
+      - name: SCH_WO_ID
+        description: Work order ID (FK to ACTION.WORK_ORDER)
+        expr: WO_ID
+        data_type: VARCHAR
+      - name: SCH_WINDOW_ID
+        description: Maintenance window ID (FK to CORE.MAINTENANCE_WINDOW)
+        expr: WINDOW_ID
+        data_type: VARCHAR
+      - name: SCH_STATUS
+        description: "Schedule status: TENTATIVE, CONFIRMED, EXPEDITE, CANCELLED"
+        expr: STATUS
+        data_type: VARCHAR
+        synonyms:
+          - schedule status
+      - name: RATIONALE
+        description: Scheduling rationale or reason
+        expr: RATIONALE
+        data_type: VARCHAR
+    time_dimensions:
+      - name: SCHEDULED_START_TS
+        description: Scheduled maintenance start
+        expr: SCHEDULED_START_TS
+        data_type: TIMESTAMP_TZ
+      - name: SCHEDULED_END_TS
+        description: Scheduled maintenance end
+        expr: SCHEDULED_END_TS
+        data_type: TIMESTAMP_TZ
+      - name: PARTS_READY_DATE
+        description: Date when all parts are expected to be available
+        expr: PARTS_READY_DATE
+        data_type: DATE
+      - name: ORDER_BY_DATE
+        description: Deadline to place procurement orders to meet the schedule
+        expr: ORDER_BY_DATE
+        data_type: DATE
+      - name: SCH_CREATED_TS
+        description: When the schedule was created
+        expr: CREATED_TS
+        data_type: TIMESTAMP_TZ
+    facts:
+      - name: EST_DURATION_MIN
+        description: Estimated maintenance duration in minutes
+        expr: EST_DURATION_MIN
+        data_type: NUMBER
+
 relationships:
   - name: oee_to_asset
     left_table: DT_SHIFT_OEE
@@ -690,6 +858,37 @@ relationships:
     relationship_columns:
       - left_column: ASSET_ID
         right_column: ASSET_ID
+  - name: shift_plan_to_oee
+    left_table: SHIFT_PLAN
+    right_table: DT_SHIFT_OEE
+    relationship_columns:
+      - left_column: SP_LINE_ID
+        right_column: LINE_ID
+      - left_column: PLAN_DATE
+        right_column: SHIFT_DATE
+      - left_column: SP_SHIFT_CODE
+        right_column: SHIFT_CODE
+    join_type: left_outer
+    relationship_type: one_to_many
+    description: Join shift plan to actual OEE performance by line/date/shift
+  - name: maint_window_to_schedule
+    left_table: MAINTENANCE_WINDOW
+    right_table: WO_SCHEDULE
+    relationship_columns:
+      - left_column: WINDOW_ID
+        right_column: SCH_WINDOW_ID
+    join_type: left_outer
+    relationship_type: one_to_many
+    description: Join maintenance windows to their scheduled work orders
+  - name: wo_schedule_to_work_order
+    left_table: WO_SCHEDULE
+    right_table: WORK_ORDER
+    relationship_columns:
+      - left_column: SCH_WO_ID
+        right_column: WO_ID
+    join_type: inner
+    relationship_type: many_to_one
+    description: Join schedules to their work order details
 
 verified_queries:
   - name: lowest_oee_asset_last_7_days
@@ -888,6 +1087,65 @@ verified_queries:
     verified_by: SYSTEM
     verified_at: 1788105600
 
+
+  - name: next_open_window_per_line
+    question: What is the next available maintenance window for each line?
+    sql: >
+      SELECT mw.LINE_ID, mw.WINDOW_ID, mw.WINDOW_TYPE,
+             mw.WINDOW_START_TS, mw.WINDOW_END_TS,
+             mw.CAPACITY_MIN, mw.BOOKED_MIN,
+             (mw.CAPACITY_MIN - mw.BOOKED_MIN) AS available_min
+      FROM AEGIS_OEE.CORE.MAINTENANCE_WINDOW mw
+      WHERE mw.STATUS = 'OPEN' AND mw.WINDOW_START_TS > CURRENT_TIMESTAMP()
+        AND (mw.CAPACITY_MIN - mw.BOOKED_MIN) > 0
+      QUALIFY ROW_NUMBER() OVER (PARTITION BY mw.LINE_ID ORDER BY mw.WINDOW_START_TS) = 1
+      ORDER BY mw.LINE_ID
+    verified_by: SYSTEM
+    verified_at: 1788105600
+
+  - name: wo_at_risk_of_missing_parts
+    question: Which work orders are at risk of missing their parts delivery date?
+    sql: >
+      SELECT ws.WO_ID, ws.SCHEDULE_ID, ws.PARTS_READY_DATE, ws.ORDER_BY_DATE,
+             ws.SCHEDULED_START_TS, ws.STATUS AS schedule_status,
+             wo.ASSET_ID, wo.TITLE, wo.PRIORITY
+      FROM AEGIS_OEE.ACTION.WO_SCHEDULE ws
+      JOIN AEGIS_OEE.ACTION.WORK_ORDER wo ON ws.WO_ID = wo.WO_ID
+      WHERE ws.STATUS NOT IN ('CANCELLED')
+        AND ws.PARTS_READY_DATE > ws.SCHEDULED_START_TS::DATE
+      ORDER BY ws.PARTS_READY_DATE DESC
+    verified_by: SYSTEM
+    verified_at: 1788105600
+
+  - name: order_by_deadlines_this_week
+    question: What procurement order-by deadlines are coming up this week?
+    sql: >
+      SELECT ws.WO_ID, ws.ORDER_BY_DATE, ws.PARTS_READY_DATE,
+             ws.SCHEDULED_START_TS, ws.STATUS,
+             wo.ASSET_ID, wo.TITLE, wo.PRIORITY
+      FROM AEGIS_OEE.ACTION.WO_SCHEDULE ws
+      JOIN AEGIS_OEE.ACTION.WORK_ORDER wo ON ws.WO_ID = wo.WO_ID
+      WHERE ws.STATUS NOT IN ('CANCELLED')
+        AND ws.ORDER_BY_DATE BETWEEN CURRENT_DATE() AND DATEADD('day', 7, CURRENT_DATE())
+      ORDER BY ws.ORDER_BY_DATE ASC
+    verified_by: SYSTEM
+    verified_at: 1788105600
+
+  - name: production_hours_lost_to_planned_maintenance
+    question: How many production hours are lost to planned maintenance this week?
+    sql: >
+      SELECT mw.LINE_ID, mw.WINDOW_TYPE,
+             COUNT(*) AS window_count,
+             SUM(mw.CAPACITY_MIN) AS total_capacity_min,
+             ROUND(SUM(mw.CAPACITY_MIN) / 60.0, 1) AS total_hours,
+             SUM(mw.BOOKED_MIN) AS booked_min
+      FROM AEGIS_OEE.CORE.MAINTENANCE_WINDOW mw
+      WHERE mw.WINDOW_START_TS BETWEEN CURRENT_TIMESTAMP() AND DATEADD('day', 7, CURRENT_TIMESTAMP())
+      GROUP BY mw.LINE_ID, mw.WINDOW_TYPE
+      ORDER BY mw.LINE_ID, total_capacity_min DESC
+    verified_by: SYSTEM
+    verified_at: 1788105600
+
 module_custom_instructions:
   sql_generation: >
     When computing OEE metrics across multiple rows, always re-derive from sums of numerators and denominators.
@@ -901,8 +1159,10 @@ module_custom_instructions:
     For MTBF and MTTR, these are pre-computed per asset in V_MTBF_MTTR.
     The plant is Hyderabad Precision Components with lines LINE_1 and LINE_2.
     Shift A runs 06:00-14:00 IST, Shift B runs 14:00-22:00 IST.
+    For scheduling questions, use CORE.SHIFT_PLAN, CORE.MAINTENANCE_WINDOW, and ACTION.WO_SCHEDULE tables.
   question_categorization: >
     This semantic view covers manufacturing OEE analytics, predictive maintenance alerts,
-    asset health monitoring, work orders, downtime analysis, and reliability metrics.
+    asset health monitoring, work orders, downtime analysis, reliability metrics,
+    shift planning, maintenance window scheduling, and work order scheduling.
     Questions about sensor telemetry raw data, training ML models, or approving work orders
     are outside the scope of this view.

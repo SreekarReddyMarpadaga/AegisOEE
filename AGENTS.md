@@ -66,6 +66,9 @@ Shifts: A 06:00–14:00, B 14:00–22:00 IST; 7 days/week. Daily 30-min planned-
 | `ACTION.WORK_ORDER` | wo_id PK, alert_id FK, asset_id, priority, state ('DRAFT','APPROVED','SYNCED','IN_PROGRESS','RESOLVED','CANCELLED','CLOSED','REJECTED'), title, description, evidence VARIANT, github_issue_url, approved_by, approved_ts, close_reason, closed_at TIMESTAMP_TZ |
 | `ACTION.WORK_ORDER_OUTBOX` | outbox_id, wo_id, target ('GITHUB','SLACK'), payload VARIANT, attempts, last_error, status |
 | `ACTION.ACTION_AUDIT` | append-only: audit_id, ts, actor, action, object_ref, detail VARIANT |
+| `CORE.SHIFT_PLAN` | plan_id PK, plan_date, shift_code, line_id, order_id FK, planned_qty, planned_start_ts, planned_end_ts, planned_run_min, status 'PLANNED'\|'FROZEN' |
+| `CORE.MAINTENANCE_WINDOW` | window_id PK, line_id, asset_id NULL = line-wide, window_start_ts, window_end_ts, window_type 'DAILY_PM'\|'CHANGEOVER'\|'NON_PRODUCTION'\|'SHUTDOWN', capacity_min, booked_min, status 'OPEN'\|'BOOKED' |
+| `ACTION.WO_SCHEDULE` | schedule_id PK, wo_id FK, window_id FK, scheduled_start_ts, scheduled_end_ts, est_duration_min, parts_ready_date, order_by_date, status 'TENTATIVE'\|'CONFIRMED'\|'EXPEDITE'\|'CANCELLED', rationale, created_ts |
 
 ## Failure physics (simulator + ML must agree)
 
@@ -96,8 +99,22 @@ Every ground-truth failure must have: matching `CORE.DOWNTIME_EVENT` (unplanned,
 - Dedup: one open alert per (asset_id, predicted_mode); refresh evidence instead of inserting duplicates
 - The agent may call `PROPOSE_WORK_ORDER` (returns a draft, zero side effects). Only `CREATE_WORK_ORDER` writes, and it requires approver identity + open alert in `ACKED` state + no duplicate open WO; `DRY_RUN` defaults TRUE. Every proposal/approval/rejection/sync lands in `ACTION.ACTION_AUDIT`.
 - **Parts check (MRO)**: every work-order draft resolves its parts kit via `FAILURE_MODE_PARTS`, compares against `PARTS_INVENTORY` (on_hand − reserved). Shortages auto-create `PURCHASE_REQUISITION` rows with a computed quote (qty × unit_cost, supplier, lead time) and an AI-drafted RFQ text. Approving a WO reserves available parts (increments reserved_qty) and links open requisitions; parts lead time extends the WO's planned window and is shown to the approver.
+- **WO Execution lifecycle** (Mission 09): `START_WORK_ORDER(wo_id, technician, note, dry_run)` transitions APPROVED|SYNCED → IN_PROGRESS, rejected if reserved parts don't cover the full kit. `COMPLETE_WORK_ORDER(wo_id, technician, finding, action_taken, labor_hours, parts_used, outcome, dry_run)` transitions IN_PROGRESS → RESOLVED, consumes parts exactly once (decrements on_hand and reserved), writes MAINTENANCE_HISTORY row, marks WO_SCHEDULE COMPLETED. `CLOSE_WORK_ORDER(wo_id, approver, verification_note, dry_run)` transitions RESOLVED → CLOSED (approver must differ from technician), closes linked alert, queues GitHub-close + Slack into OUTBOX. All three require a real person actor (not NULL/empty/AGENT), audit every attempt including rejections, and support dry_run. `UPDATE_REQUISITION_STATUS` on RECEIVED reserves received qty for the linked WO (up to its shortage), which unblocks START_WORK_ORDER. Cancelled/rejected WOs release reserved parts and schedule capacity.
 - **Outbox dispatcher** (`scripts/outbox_dispatcher.py`): handles outbound GitHub Issue + Slack delivery, GitHub closure sync-back (WO closed/rejected → close linked Issue), and inbound sync (Issue closed externally → WO transitions to RESOLVED/CANCELLED, releases reserved parts on cancellation). All state transitions produce `ACTION_AUDIT` rows. For accounts with EAI, `sql/11_integrations.sql` has native Snowflake procedure versions.
 - RCA answers always use the structure: Assessment / Evidence / Operational impact / Alternatives considered / Recommended action / Safety statement / Trace. Causes are "most likely", never proven.
+
+## Reproducibility contract
+
+Every mission must first check whether the artifact it produces already exists in the repo (`sql/`, `data_gen/`, `semantic/`, `cortex_project/`, `app/`, `deploy/`) and **execute/validate it instead of regenerating it**. Regenerate or edit only when a check fails. Deterministic parts must be applied from files:
+
+- **Data generation**: seed 42 via `data_gen/backfill.py` and `data_gen/cmms_plan.py` — run from files, do not regenerate code.
+- **SQL objects**: all DDL in `deploy/sql/` (numbered, dependency-ordered) — execute as-is.
+- **Semantic view**: `deploy/sql/06_semantic_search.sql` contains the full DDL — execute, do not regenerate.
+- **Agent spec**: `deploy/sql/07_agent.sql` contains `CREATE AGENT ... FROM SPECIFICATION` — execute via SQL, no `cortex project deploy`.
+- **Streamlit deploy**: `deploy/sql/09_app.sh` — stage-based PUT + CREATE STREAMLIT on warehouse runtime.
+- **ML models**: `deploy/sql/05_ml_models.sql` — training views, model creation, backfill scoring.
+
+The LLM is used for: planning, evaluation, diagnosis, fixes, and generating new artifacts when existing ones fail validation. It must not regenerate artifacts that already pass their acceptance checks.
 
 ## Skills in this repo
 

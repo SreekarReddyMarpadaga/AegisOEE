@@ -23,7 +23,10 @@ USE WAREHOUSE AEGIS_WH;
 --   - 15 verified queries covering all demo question types
 --   - Custom instructions for OEE math and plant context
 
--- Create MCP server for agent tool procedures (stored procedures as tools)
+-- Create MCP server for external MCP clients (Snowflake-managed MCP server).
+-- Note: The Cortex Agent (AEGIS_RCA_AGENT) uses generic tool_spec with
+-- tool_resources referencing the procedures directly, not the MCP server.
+-- The MCP server is available for external MCP clients to consume.
 CREATE OR REPLACE MCP SERVER AEGIS_OEE.ACTION.AEGIS_TOOLS_MCP
   FROM SPECIFICATION $$
     tools:

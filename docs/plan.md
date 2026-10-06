@@ -50,7 +50,7 @@ cortex -c aegis -p "Reply with exactly OK"        # then interactive /model → 
 
 # §3 integrations
 export GITHUB_PAT=... SLACK_WEBHOOK_URL=...        # persist in ~/.bashrc
-cortex mcp add github https://api.githubcopilot.com/mcp/ --type http -H "Authorization: Bearer ${GITHUB_PAT}"
+# GitHub access is via the outbox dispatcher (scripts/outbox_dispatcher.py) using GITHUB_PAT + GITHUB_REPO
 # permissions.json: allow create/list/get/update issues; deny deletes/merges
 
 # §4 execute

@@ -18,4 +18,6 @@ entities:
       - pages/3_Asset_Digital_Twin.py
       - pages/4_Ask_Aegis.py
       - pages/5_Work_Order_Review.py
-      - pages/6_Asset_Map.py
+      - pages/6_Parts_Procurement.py
+      - pages/7_Asset_Map.py
+      - pages/8_Shift_Plan.py

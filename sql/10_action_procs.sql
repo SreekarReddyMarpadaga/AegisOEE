@@ -256,6 +256,9 @@ BEGIN
     'approver', :P_APPROVER, 'predicted_mode', :v_predicted_mode
   ));
 
+  -- Auto-schedule into the best maintenance window (TENTATIVE or EXPEDITE)
+  CALL AEGIS_OEE.ACTION.AUTO_SCHEDULE_WO(:v_wo_id, :P_APPROVER);
+
   RETURN OBJECT_CONSTRUCT(
     'status', 'APPROVED', 'wo_id', :v_wo_id, 'alert_id', :P_ALERT_ID,
     'asset_id', :v_asset_id, 'priority', :v_severity, 'title', :v_title,
@@ -426,3 +429,541 @@ CREATE TABLE IF NOT EXISTS AEGIS_OEE.TEST.ACTION_GUARDRAIL_RESULTS (
   DETAIL       STRING,
   TESTED_AT    TIMESTAMP_TZ DEFAULT CURRENT_TIMESTAMP()
 );
+
+-- =============================================================================
+-- 8. UPDATE_REQUISITION_STATUS(req_id, new_status, actor, note, dry_run)
+-- Valid transitions: PENDING_QUOTE→QUOTED→ORDERED→RECEIVED, and CANCELLED from
+-- any non-RECEIVED state.  RECEIVED increments on_hand_qty exactly once.
+-- Double-receive guard, AGENT/NULL actor rejection, audit on every attempt.
+-- =============================================================================
+
+CREATE OR REPLACE PROCEDURE AEGIS_OEE.ACTION.UPDATE_REQUISITION_STATUS(
+  P_REQ_ID     VARCHAR,
+  P_NEW_STATUS VARCHAR,
+  P_ACTOR      VARCHAR,
+  P_NOTE       VARCHAR DEFAULT '',
+  P_DRY_RUN    BOOLEAN DEFAULT TRUE
+)
+RETURNS VARIANT
+LANGUAGE SQL
+EXECUTE AS CALLER
+AS
+$$
+DECLARE
+  v_cur_status VARCHAR;
+  v_part_id VARCHAR;
+  v_qty NUMBER;
+  v_wo_id VARCHAR;
+  v_valid BOOLEAN DEFAULT FALSE;
+  v_audit_id VARCHAR;
+  v_reason VARCHAR DEFAULT '';
+BEGIN
+  -- Generate audit ID upfront (every attempt gets one)
+  v_audit_id := 'AUD_REQUPD_' || TO_VARCHAR(CURRENT_TIMESTAMP(), 'YYYYMMDD_HH24MISSFF3');
+
+  -- Actor validation
+  IF (:P_ACTOR IS NULL OR TRIM(:P_ACTOR) = '' OR UPPER(TRIM(:P_ACTOR)) = 'AGENT') THEN
+    v_reason := 'Invalid actor: ' || COALESCE(:P_ACTOR, 'NULL') || ' — must be a real person';
+    INSERT INTO AEGIS_OEE.ACTION.ACTION_AUDIT (AUDIT_ID, TS, ACTOR, ACTION, OBJECT_REF, DETAIL)
+    SELECT :v_audit_id, CURRENT_TIMESTAMP(), COALESCE(:P_ACTOR, 'UNKNOWN'),
+           'REQ_STATUS_REJECTED', :P_REQ_ID,
+           OBJECT_CONSTRUCT('reason', :v_reason, 'requested_status', :P_NEW_STATUS);
+    RETURN OBJECT_CONSTRUCT('status', 'REJECTED', 'reason', :v_reason);
+  END IF;
+
+  -- Fetch current requisition
+  SELECT STATUS, PART_ID, QTY, WO_ID
+  INTO :v_cur_status, :v_part_id, :v_qty, :v_wo_id
+  FROM AEGIS_OEE.ACTION.PURCHASE_REQUISITION
+  WHERE REQ_ID = :P_REQ_ID;
+
+  IF (:v_cur_status IS NULL) THEN
+    v_reason := 'Requisition not found: ' || :P_REQ_ID;
+    INSERT INTO AEGIS_OEE.ACTION.ACTION_AUDIT (AUDIT_ID, TS, ACTOR, ACTION, OBJECT_REF, DETAIL)
+    SELECT :v_audit_id, CURRENT_TIMESTAMP(), :P_ACTOR,
+           'REQ_STATUS_REJECTED', :P_REQ_ID,
+           OBJECT_CONSTRUCT('reason', :v_reason, 'requested_status', :P_NEW_STATUS);
+    RETURN OBJECT_CONSTRUCT('status', 'REJECTED', 'reason', :v_reason);
+  END IF;
+
+  -- Transition validation
+  v_valid := CASE
+    WHEN :v_cur_status = 'PENDING_QUOTE' AND :P_NEW_STATUS = 'QUOTED'   THEN TRUE
+    WHEN :v_cur_status = 'QUOTED'        AND :P_NEW_STATUS = 'ORDERED'  THEN TRUE
+    WHEN :v_cur_status = 'ORDERED'       AND :P_NEW_STATUS = 'RECEIVED' THEN TRUE
+    WHEN :P_NEW_STATUS = 'CANCELLED' AND :v_cur_status != 'RECEIVED'    THEN TRUE
+    ELSE FALSE
+  END;
+
+  IF (NOT :v_valid) THEN
+    v_reason := 'Invalid transition: ' || :v_cur_status || ' → ' || :P_NEW_STATUS;
+    INSERT INTO AEGIS_OEE.ACTION.ACTION_AUDIT (AUDIT_ID, TS, ACTOR, ACTION, OBJECT_REF, DETAIL)
+    SELECT :v_audit_id, CURRENT_TIMESTAMP(), :P_ACTOR,
+           'REQ_STATUS_REJECTED', :P_REQ_ID,
+           OBJECT_CONSTRUCT('reason', :v_reason, 'from', :v_cur_status, 'to', :P_NEW_STATUS);
+    RETURN OBJECT_CONSTRUCT('status', 'REJECTED', 'reason', :v_reason);
+  END IF;
+
+  -- Dry-run: preview only
+  IF (:P_DRY_RUN) THEN
+    INSERT INTO AEGIS_OEE.ACTION.ACTION_AUDIT (AUDIT_ID, TS, ACTOR, ACTION, OBJECT_REF, DETAIL)
+    SELECT :v_audit_id, CURRENT_TIMESTAMP(), :P_ACTOR,
+           'REQ_STATUS_DRYRUN', :P_REQ_ID,
+           OBJECT_CONSTRUCT('from', :v_cur_status, 'to', :P_NEW_STATUS, 'note', :P_NOTE);
+    RETURN OBJECT_CONSTRUCT('status', 'DRY_RUN_PREVIEW', 'req_id', :P_REQ_ID,
+           'from', :v_cur_status, 'to', :P_NEW_STATUS, 'part_id', :v_part_id, 'qty', :v_qty);
+  END IF;
+
+  -- Execute transition
+  UPDATE AEGIS_OEE.ACTION.PURCHASE_REQUISITION
+  SET STATUS = :P_NEW_STATUS
+  WHERE REQ_ID = :P_REQ_ID AND STATUS = :v_cur_status;
+
+  -- RECEIVED: increment on_hand_qty exactly once (the WHERE STATUS guard above
+  -- plus the transition check ensures this cannot fire twice for the same req)
+  IF (:P_NEW_STATUS = 'RECEIVED') THEN
+    UPDATE AEGIS_OEE.CORE.PARTS_INVENTORY
+    SET ON_HAND_QTY = ON_HAND_QTY + :v_qty
+    WHERE PART_ID = :v_part_id;
+
+    -- Reserve received qty for the linked WO (up to the WO's shortage for that part)
+    IF (:v_wo_id IS NOT NULL) THEN
+      LET v_wo_asset_id VARCHAR := (SELECT ASSET_ID FROM AEGIS_OEE.ACTION.WORK_ORDER WHERE WO_ID = :v_wo_id);
+      LET v_wo_alert_id VARCHAR := (SELECT ALERT_ID FROM AEGIS_OEE.ACTION.WORK_ORDER WHERE WO_ID = :v_wo_id);
+      LET v_wo_mode VARCHAR := (SELECT PREDICTED_MODE FROM AEGIS_OEE.ACTION.ALERT WHERE ALERT_ID = :v_wo_alert_id);
+      LET v_wo_asset_type VARCHAR := (SELECT ASSET_TYPE FROM AEGIS_OEE.CORE.ASSET WHERE ASSET_ID = :v_wo_asset_id);
+      LET v_needed NUMBER := (
+        SELECT COALESCE(fmp.QTY_REQUIRED, 0)
+        FROM AEGIS_OEE.CORE.FAILURE_MODE_PARTS fmp
+        WHERE fmp.FAILURE_MODE = :v_wo_mode AND fmp.ASSET_TYPE = :v_wo_asset_type AND fmp.PART_ID = :v_part_id
+      );
+      LET v_already_reserved NUMBER := (SELECT RESERVED_QTY FROM AEGIS_OEE.CORE.PARTS_INVENTORY WHERE PART_ID = :v_part_id);
+      LET v_on_hand NUMBER := (SELECT ON_HAND_QTY FROM AEGIS_OEE.CORE.PARTS_INVENTORY WHERE PART_ID = :v_part_id);
+      LET v_reserve_amount NUMBER := LEAST(:v_qty, GREATEST(:v_needed - :v_already_reserved, 0), :v_on_hand - :v_already_reserved);
+      IF (:v_reserve_amount > 0) THEN
+        UPDATE AEGIS_OEE.CORE.PARTS_INVENTORY
+        SET RESERVED_QTY = RESERVED_QTY + :v_reserve_amount
+        WHERE PART_ID = :v_part_id;
+      END IF;
+    END IF;
+  END IF;
+
+  -- Audit
+  INSERT INTO AEGIS_OEE.ACTION.ACTION_AUDIT (AUDIT_ID, TS, ACTOR, ACTION, OBJECT_REF, DETAIL)
+  SELECT :v_audit_id, CURRENT_TIMESTAMP(), :P_ACTOR,
+         'REQ_STATUS_CHANGED', :P_REQ_ID,
+         OBJECT_CONSTRUCT('from', :v_cur_status, 'to', :P_NEW_STATUS,
+                          'part_id', :v_part_id, 'qty', :v_qty, 'note', :P_NOTE);
+
+  RETURN OBJECT_CONSTRUCT('status', 'OK', 'req_id', :P_REQ_ID,
+         'from', :v_cur_status, 'to', :P_NEW_STATUS, 'part_id', :v_part_id, 'qty', :v_qty);
+END;
+$$;
+
+-- =============================================================================
+-- 9. START_WORK_ORDER(wo_id, technician, note, dry_run)
+-- APPROVED|SYNCED → IN_PROGRESS. Rejected if required parts not available.
+-- =============================================================================
+
+CREATE OR REPLACE PROCEDURE AEGIS_OEE.ACTION.START_WORK_ORDER(
+  P_WO_ID      VARCHAR,
+  P_TECHNICIAN VARCHAR,
+  P_NOTE       VARCHAR DEFAULT '',
+  P_DRY_RUN    BOOLEAN DEFAULT TRUE
+)
+RETURNS VARIANT
+LANGUAGE SQL
+EXECUTE AS CALLER
+AS
+$$
+DECLARE
+  v_wo_state VARCHAR;
+  v_asset_id VARCHAR;
+  v_alert_id VARCHAR;
+  v_predicted_mode VARCHAR;
+  v_asset_type VARCHAR;
+  v_audit_id VARCHAR;
+  v_blockers VARIANT;
+  v_blocker_count NUMBER DEFAULT 0;
+BEGIN
+  v_audit_id := 'AUD_START_' || TO_VARCHAR(CURRENT_TIMESTAMP(), 'YYYYMMDD_HH24MISSFF3');
+
+  -- Actor validation
+  IF (:P_TECHNICIAN IS NULL OR TRIM(:P_TECHNICIAN) = '' OR UPPER(TRIM(:P_TECHNICIAN)) = 'AGENT') THEN
+    INSERT INTO AEGIS_OEE.ACTION.ACTION_AUDIT (AUDIT_ID, TS, ACTOR, ACTION, OBJECT_REF, DETAIL)
+    SELECT :v_audit_id, CURRENT_TIMESTAMP(), COALESCE(:P_TECHNICIAN, 'UNKNOWN'),
+           'START_WO_REJECTED', :P_WO_ID,
+           OBJECT_CONSTRUCT('reason', 'Invalid technician: ' || COALESCE(:P_TECHNICIAN, 'NULL'));
+    RETURN OBJECT_CONSTRUCT('status', 'REJECTED', 'reason', 'Technician must be a real person, not NULL/empty/AGENT');
+  END IF;
+
+  -- Fetch WO
+  SELECT STATE, ASSET_ID, ALERT_ID
+  INTO :v_wo_state, :v_asset_id, :v_alert_id
+  FROM AEGIS_OEE.ACTION.WORK_ORDER WHERE WO_ID = :P_WO_ID;
+
+  IF (:v_wo_state IS NULL) THEN
+    INSERT INTO AEGIS_OEE.ACTION.ACTION_AUDIT (AUDIT_ID, TS, ACTOR, ACTION, OBJECT_REF, DETAIL)
+    SELECT :v_audit_id, CURRENT_TIMESTAMP(), :P_TECHNICIAN,
+           'START_WO_REJECTED', :P_WO_ID,
+           OBJECT_CONSTRUCT('reason', 'Work order not found');
+    RETURN OBJECT_CONSTRUCT('status', 'REJECTED', 'reason', 'Work order not found: ' || :P_WO_ID);
+  END IF;
+
+  -- Valid transitions: APPROVED|SYNCED → IN_PROGRESS
+  IF (:v_wo_state NOT IN ('APPROVED', 'SYNCED')) THEN
+    INSERT INTO AEGIS_OEE.ACTION.ACTION_AUDIT (AUDIT_ID, TS, ACTOR, ACTION, OBJECT_REF, DETAIL)
+    SELECT :v_audit_id, CURRENT_TIMESTAMP(), :P_TECHNICIAN,
+           'START_WO_REJECTED', :P_WO_ID,
+           OBJECT_CONSTRUCT('reason', 'Invalid transition: ' || :v_wo_state || ' → IN_PROGRESS');
+    RETURN OBJECT_CONSTRUCT('status', 'REJECTED', 'reason',
+           'Cannot start WO in state ' || :v_wo_state || '; must be APPROVED or SYNCED');
+  END IF;
+
+  -- Get failure mode + asset type
+  SELECT PREDICTED_MODE INTO :v_predicted_mode
+  FROM AEGIS_OEE.ACTION.ALERT WHERE ALERT_ID = :v_alert_id;
+
+  SELECT ASSET_TYPE INTO :v_asset_type
+  FROM AEGIS_OEE.CORE.ASSET WHERE ASSET_ID = :v_asset_id;
+
+  -- Parts gate: check that reserved parts cover the full kit for this WO
+  SELECT ARRAY_AGG(OBJECT_CONSTRUCT(
+    'part_id', fmp.PART_ID, 'part_name', pi.PART_NAME,
+    'qty_required', fmp.QTY_REQUIRED,
+    'on_hand', pi.ON_HAND_QTY, 'reserved', pi.RESERVED_QTY,
+    'shortage', GREATEST(0, fmp.QTY_REQUIRED - pi.RESERVED_QTY)
+  )) INTO :v_blockers
+  FROM AEGIS_OEE.CORE.FAILURE_MODE_PARTS fmp
+  JOIN AEGIS_OEE.CORE.PARTS_INVENTORY pi ON fmp.PART_ID = pi.PART_ID
+  WHERE fmp.FAILURE_MODE = :v_predicted_mode AND fmp.ASSET_TYPE = :v_asset_type
+    AND fmp.QTY_REQUIRED > pi.RESERVED_QTY;
+
+  v_blocker_count := COALESCE(ARRAY_SIZE(:v_blockers), 0);
+
+  IF (:v_blocker_count > 0) THEN
+    INSERT INTO AEGIS_OEE.ACTION.ACTION_AUDIT (AUDIT_ID, TS, ACTOR, ACTION, OBJECT_REF, DETAIL)
+    SELECT :v_audit_id, CURRENT_TIMESTAMP(), :P_TECHNICIAN,
+           'START_WO_REJECTED', :P_WO_ID,
+           OBJECT_CONSTRUCT('reason', 'Parts not ready', 'blockers', :v_blockers);
+    RETURN OBJECT_CONSTRUCT('status', 'REJECTED', 'reason', 'Required parts not available for this WO',
+           'blocking_parts', :v_blockers, 'action', 'Receive outstanding requisitions via Parts Procurement page');
+  END IF;
+
+  -- Dry-run preview
+  IF (:P_DRY_RUN) THEN
+    INSERT INTO AEGIS_OEE.ACTION.ACTION_AUDIT (AUDIT_ID, TS, ACTOR, ACTION, OBJECT_REF, DETAIL)
+    SELECT :v_audit_id, CURRENT_TIMESTAMP(), :P_TECHNICIAN,
+           'START_WO_DRYRUN', :P_WO_ID,
+           OBJECT_CONSTRUCT('from', :v_wo_state, 'to', 'IN_PROGRESS', 'note', :P_NOTE);
+    RETURN OBJECT_CONSTRUCT('status', 'DRY_RUN_PREVIEW', 'wo_id', :P_WO_ID,
+           'from', :v_wo_state, 'to', 'IN_PROGRESS', 'technician', :P_TECHNICIAN, 'parts_ready', TRUE);
+  END IF;
+
+  -- Execute: transition WO to IN_PROGRESS
+  UPDATE AEGIS_OEE.ACTION.WORK_ORDER
+  SET STATE = 'IN_PROGRESS'
+  WHERE WO_ID = :P_WO_ID AND STATE IN ('APPROVED', 'SYNCED');
+
+  -- Mark linked WO_SCHEDULE row IN_PROGRESS
+  UPDATE AEGIS_OEE.ACTION.WO_SCHEDULE
+  SET STATUS = 'IN_PROGRESS'
+  WHERE WO_ID = :P_WO_ID AND STATUS NOT IN ('CANCELLED', 'COMPLETED');
+
+  -- Audit
+  INSERT INTO AEGIS_OEE.ACTION.ACTION_AUDIT (AUDIT_ID, TS, ACTOR, ACTION, OBJECT_REF, DETAIL)
+  SELECT :v_audit_id, CURRENT_TIMESTAMP(), :P_TECHNICIAN,
+         'WO_STARTED', :P_WO_ID,
+         OBJECT_CONSTRUCT('from', :v_wo_state, 'to', 'IN_PROGRESS',
+                          'note', :P_NOTE, 'technician', :P_TECHNICIAN);
+
+  RETURN OBJECT_CONSTRUCT('status', 'OK', 'wo_id', :P_WO_ID,
+         'from', :v_wo_state, 'to', 'IN_PROGRESS', 'technician', :P_TECHNICIAN);
+END;
+$$;
+
+-- =============================================================================
+-- 10. COMPLETE_WORK_ORDER(wo_id, technician, finding, action_taken, labor_hours,
+--     parts_used, outcome, dry_run)
+-- IN_PROGRESS → RESOLVED. Consumes parts exactly once, writes MAINTENANCE_HISTORY.
+-- =============================================================================
+
+CREATE OR REPLACE PROCEDURE AEGIS_OEE.ACTION.COMPLETE_WORK_ORDER(
+  P_WO_ID        VARCHAR,
+  P_TECHNICIAN   VARCHAR,
+  P_FINDING      VARCHAR,
+  P_ACTION_TAKEN VARCHAR,
+  P_LABOR_HOURS  FLOAT,
+  P_PARTS_USED   VARIANT DEFAULT NULL,
+  P_OUTCOME      VARCHAR DEFAULT 'FIXED',
+  P_DRY_RUN      BOOLEAN DEFAULT TRUE
+)
+RETURNS VARIANT
+LANGUAGE SQL
+EXECUTE AS CALLER
+AS
+$$
+DECLARE
+  v_wo_state VARCHAR;
+  v_asset_id VARCHAR;
+  v_alert_id VARCHAR;
+  v_predicted_mode VARCHAR;
+  v_asset_type VARCHAR;
+  v_audit_id VARCHAR;
+  v_hist_id VARCHAR;
+  v_schedule_id VARCHAR;
+  v_est_duration NUMBER;
+  v_actual_duration NUMBER;
+BEGIN
+  v_audit_id := 'AUD_COMP_' || TO_VARCHAR(CURRENT_TIMESTAMP(), 'YYYYMMDD_HH24MISSFF3');
+
+  -- Actor validation
+  IF (:P_TECHNICIAN IS NULL OR TRIM(:P_TECHNICIAN) = '' OR UPPER(TRIM(:P_TECHNICIAN)) = 'AGENT') THEN
+    INSERT INTO AEGIS_OEE.ACTION.ACTION_AUDIT (AUDIT_ID, TS, ACTOR, ACTION, OBJECT_REF, DETAIL)
+    SELECT :v_audit_id, CURRENT_TIMESTAMP(), COALESCE(:P_TECHNICIAN, 'UNKNOWN'),
+           'COMPLETE_WO_REJECTED', :P_WO_ID,
+           OBJECT_CONSTRUCT('reason', 'Invalid technician: ' || COALESCE(:P_TECHNICIAN, 'NULL'));
+    RETURN OBJECT_CONSTRUCT('status', 'REJECTED', 'reason', 'Technician must be a real person, not NULL/empty/AGENT');
+  END IF;
+
+  -- Outcome validation
+  IF (:P_OUTCOME NOT IN ('FIXED', 'PARTIAL')) THEN
+    INSERT INTO AEGIS_OEE.ACTION.ACTION_AUDIT (AUDIT_ID, TS, ACTOR, ACTION, OBJECT_REF, DETAIL)
+    SELECT :v_audit_id, CURRENT_TIMESTAMP(), :P_TECHNICIAN,
+           'COMPLETE_WO_REJECTED', :P_WO_ID,
+           OBJECT_CONSTRUCT('reason', 'Invalid outcome: ' || :P_OUTCOME);
+    RETURN OBJECT_CONSTRUCT('status', 'REJECTED', 'reason', 'Outcome must be FIXED or PARTIAL');
+  END IF;
+
+  -- Fetch WO
+  SELECT STATE, ASSET_ID, ALERT_ID
+  INTO :v_wo_state, :v_asset_id, :v_alert_id
+  FROM AEGIS_OEE.ACTION.WORK_ORDER WHERE WO_ID = :P_WO_ID;
+
+  IF (:v_wo_state IS NULL) THEN
+    INSERT INTO AEGIS_OEE.ACTION.ACTION_AUDIT (AUDIT_ID, TS, ACTOR, ACTION, OBJECT_REF, DETAIL)
+    SELECT :v_audit_id, CURRENT_TIMESTAMP(), :P_TECHNICIAN,
+           'COMPLETE_WO_REJECTED', :P_WO_ID,
+           OBJECT_CONSTRUCT('reason', 'Work order not found');
+    RETURN OBJECT_CONSTRUCT('status', 'REJECTED', 'reason', 'Work order not found: ' || :P_WO_ID);
+  END IF;
+
+  -- Valid transition: IN_PROGRESS → RESOLVED only
+  IF (:v_wo_state != 'IN_PROGRESS') THEN
+    INSERT INTO AEGIS_OEE.ACTION.ACTION_AUDIT (AUDIT_ID, TS, ACTOR, ACTION, OBJECT_REF, DETAIL)
+    SELECT :v_audit_id, CURRENT_TIMESTAMP(), :P_TECHNICIAN,
+           'COMPLETE_WO_REJECTED', :P_WO_ID,
+           OBJECT_CONSTRUCT('reason', 'Invalid transition: ' || :v_wo_state || ' → RESOLVED');
+    RETURN OBJECT_CONSTRUCT('status', 'REJECTED', 'reason',
+           'Cannot complete WO in state ' || :v_wo_state || '; must be IN_PROGRESS');
+  END IF;
+
+  -- Get failure mode + asset type
+  SELECT PREDICTED_MODE INTO :v_predicted_mode
+  FROM AEGIS_OEE.ACTION.ALERT WHERE ALERT_ID = :v_alert_id;
+
+  SELECT ASSET_TYPE INTO :v_asset_type
+  FROM AEGIS_OEE.CORE.ASSET WHERE ASSET_ID = :v_asset_id;
+
+  -- Dry-run preview
+  IF (:P_DRY_RUN) THEN
+    INSERT INTO AEGIS_OEE.ACTION.ACTION_AUDIT (AUDIT_ID, TS, ACTOR, ACTION, OBJECT_REF, DETAIL)
+    SELECT :v_audit_id, CURRENT_TIMESTAMP(), :P_TECHNICIAN,
+           'COMPLETE_WO_DRYRUN', :P_WO_ID,
+           OBJECT_CONSTRUCT('outcome', :P_OUTCOME, 'labor_hours', :P_LABOR_HOURS);
+    RETURN OBJECT_CONSTRUCT('status', 'DRY_RUN_PREVIEW', 'wo_id', :P_WO_ID,
+           'from', 'IN_PROGRESS', 'to', 'RESOLVED', 'outcome', :P_OUTCOME,
+           'technician', :P_TECHNICIAN, 'labor_hours', :P_LABOR_HOURS,
+           'finding', :P_FINDING, 'action_taken', :P_ACTION_TAKEN);
+  END IF;
+
+  -- Execute: transition WO to RESOLVED
+  UPDATE AEGIS_OEE.ACTION.WORK_ORDER
+  SET STATE = 'RESOLVED', CLOSE_REASON = :P_OUTCOME
+  WHERE WO_ID = :P_WO_ID AND STATE = 'IN_PROGRESS';
+
+  -- Consume parts exactly once: decrease on_hand_qty and reserved_qty
+  UPDATE AEGIS_OEE.CORE.PARTS_INVENTORY pi
+  SET ON_HAND_QTY  = pi.ON_HAND_QTY  - LEAST(fmp.QTY_REQUIRED, pi.ON_HAND_QTY),
+      RESERVED_QTY = pi.RESERVED_QTY - LEAST(fmp.QTY_REQUIRED, pi.RESERVED_QTY)
+  FROM AEGIS_OEE.CORE.FAILURE_MODE_PARTS fmp
+  WHERE pi.PART_ID = fmp.PART_ID
+    AND fmp.FAILURE_MODE = :v_predicted_mode AND fmp.ASSET_TYPE = :v_asset_type;
+
+  -- Write MAINTENANCE_HISTORY row
+  v_hist_id := 'MH_' || REPLACE(:P_WO_ID, 'WO_', '') || '_' || TO_VARCHAR(CURRENT_TIMESTAMP(), 'YYYYMMDD_HH24MISS');
+
+  INSERT INTO AEGIS_OEE.CORE.MAINTENANCE_HISTORY
+    (WO_HIST_ID, ASSET_ID, COMPLETED_TS, FAILURE_CODE, FINDING, ACTION_TAKEN, PARTS_USED, LABOR_HOURS, TECHNICIAN_NOTE)
+  SELECT :v_hist_id, :v_asset_id, CURRENT_TIMESTAMP(), :v_predicted_mode,
+         :P_FINDING, :P_ACTION_TAKEN,
+         COALESCE(:P_PARTS_USED, (
+           SELECT ARRAY_AGG(OBJECT_CONSTRUCT('part_id', fmp.PART_ID, 'qty', fmp.QTY_REQUIRED))
+           FROM AEGIS_OEE.CORE.FAILURE_MODE_PARTS fmp
+           WHERE fmp.FAILURE_MODE = :v_predicted_mode AND fmp.ASSET_TYPE = :v_asset_type
+         ))::STRING,
+         :P_LABOR_HOURS,
+         :P_OUTCOME || ' by ' || :P_TECHNICIAN || '. ' || COALESCE(:P_FINDING, '');
+
+  -- Mark WO_SCHEDULE as COMPLETED, record actual vs estimated duration
+  SELECT ws.SCHEDULE_ID, ws.EST_DURATION_MIN
+  INTO :v_schedule_id, :v_est_duration
+  FROM AEGIS_OEE.ACTION.WO_SCHEDULE ws
+  WHERE ws.WO_ID = :P_WO_ID AND ws.STATUS = 'IN_PROGRESS'
+  ORDER BY ws.CREATED_TS DESC LIMIT 1;
+
+  IF (:v_schedule_id IS NOT NULL) THEN
+    v_actual_duration := ROUND(:P_LABOR_HOURS * 60);
+    UPDATE AEGIS_OEE.ACTION.WO_SCHEDULE
+    SET STATUS = 'COMPLETED',
+        RATIONALE = COALESCE(RATIONALE, '') || ' | Completed: actual=' || :v_actual_duration || 'min vs est=' || :v_est_duration || 'min'
+    WHERE SCHEDULE_ID = :v_schedule_id;
+  END IF;
+
+  -- Audit
+  INSERT INTO AEGIS_OEE.ACTION.ACTION_AUDIT (AUDIT_ID, TS, ACTOR, ACTION, OBJECT_REF, DETAIL)
+  SELECT :v_audit_id, CURRENT_TIMESTAMP(), :P_TECHNICIAN,
+         'WO_COMPLETED', :P_WO_ID,
+         OBJECT_CONSTRUCT('outcome', :P_OUTCOME, 'finding', :P_FINDING,
+                          'action_taken', :P_ACTION_TAKEN, 'labor_hours', :P_LABOR_HOURS,
+                          'maintenance_history_id', :v_hist_id,
+                          'schedule_id', :v_schedule_id);
+
+  RETURN OBJECT_CONSTRUCT('status', 'OK', 'wo_id', :P_WO_ID,
+         'from', 'IN_PROGRESS', 'to', 'RESOLVED', 'outcome', :P_OUTCOME,
+         'maintenance_history_id', :v_hist_id, 'technician', :P_TECHNICIAN);
+END;
+$$;
+
+-- =============================================================================
+-- 11. CLOSE_WORK_ORDER(wo_id, approver, verification_note, dry_run)
+-- RESOLVED → CLOSED. Approver must differ from technician. Closes alert.
+-- =============================================================================
+
+CREATE OR REPLACE PROCEDURE AEGIS_OEE.ACTION.CLOSE_WORK_ORDER(
+  P_WO_ID             VARCHAR,
+  P_APPROVER          VARCHAR,
+  P_VERIFICATION_NOTE VARCHAR,
+  P_DRY_RUN           BOOLEAN DEFAULT TRUE
+)
+RETURNS VARIANT
+LANGUAGE SQL
+EXECUTE AS CALLER
+AS
+$$
+DECLARE
+  v_wo_state VARCHAR;
+  v_asset_id VARCHAR;
+  v_alert_id VARCHAR;
+  v_audit_id VARCHAR;
+  v_technician VARCHAR;
+BEGIN
+  v_audit_id := 'AUD_CLOSE_' || TO_VARCHAR(CURRENT_TIMESTAMP(), 'YYYYMMDD_HH24MISSFF3');
+
+  -- Actor validation
+  IF (:P_APPROVER IS NULL OR TRIM(:P_APPROVER) = '' OR UPPER(TRIM(:P_APPROVER)) = 'AGENT') THEN
+    INSERT INTO AEGIS_OEE.ACTION.ACTION_AUDIT (AUDIT_ID, TS, ACTOR, ACTION, OBJECT_REF, DETAIL)
+    SELECT :v_audit_id, CURRENT_TIMESTAMP(), COALESCE(:P_APPROVER, 'UNKNOWN'),
+           'CLOSE_WO_REJECTED', :P_WO_ID,
+           OBJECT_CONSTRUCT('reason', 'Invalid approver: ' || COALESCE(:P_APPROVER, 'NULL'));
+    RETURN OBJECT_CONSTRUCT('status', 'REJECTED', 'reason', 'Approver must be a real person, not NULL/empty/AGENT');
+  END IF;
+
+  -- Verification note required
+  IF (:P_VERIFICATION_NOTE IS NULL OR TRIM(:P_VERIFICATION_NOTE) = '') THEN
+    INSERT INTO AEGIS_OEE.ACTION.ACTION_AUDIT (AUDIT_ID, TS, ACTOR, ACTION, OBJECT_REF, DETAIL)
+    SELECT :v_audit_id, CURRENT_TIMESTAMP(), :P_APPROVER,
+           'CLOSE_WO_REJECTED', :P_WO_ID,
+           OBJECT_CONSTRUCT('reason', 'Verification note required');
+    RETURN OBJECT_CONSTRUCT('status', 'REJECTED', 'reason', 'Verification note is required to close a work order');
+  END IF;
+
+  -- Fetch WO
+  SELECT STATE, ASSET_ID, ALERT_ID
+  INTO :v_wo_state, :v_asset_id, :v_alert_id
+  FROM AEGIS_OEE.ACTION.WORK_ORDER WHERE WO_ID = :P_WO_ID;
+
+  IF (:v_wo_state IS NULL) THEN
+    INSERT INTO AEGIS_OEE.ACTION.ACTION_AUDIT (AUDIT_ID, TS, ACTOR, ACTION, OBJECT_REF, DETAIL)
+    SELECT :v_audit_id, CURRENT_TIMESTAMP(), :P_APPROVER,
+           'CLOSE_WO_REJECTED', :P_WO_ID,
+           OBJECT_CONSTRUCT('reason', 'Work order not found');
+    RETURN OBJECT_CONSTRUCT('status', 'REJECTED', 'reason', 'Work order not found: ' || :P_WO_ID);
+  END IF;
+
+  -- Valid transition: RESOLVED → CLOSED
+  IF (:v_wo_state != 'RESOLVED') THEN
+    INSERT INTO AEGIS_OEE.ACTION.ACTION_AUDIT (AUDIT_ID, TS, ACTOR, ACTION, OBJECT_REF, DETAIL)
+    SELECT :v_audit_id, CURRENT_TIMESTAMP(), :P_APPROVER,
+           'CLOSE_WO_REJECTED', :P_WO_ID,
+           OBJECT_CONSTRUCT('reason', 'Invalid transition: ' || :v_wo_state || ' → CLOSED');
+    RETURN OBJECT_CONSTRUCT('status', 'REJECTED', 'reason',
+           'Cannot close WO in state ' || :v_wo_state || '; must be RESOLVED');
+  END IF;
+
+  -- Approver must differ from the technician who started the work
+  SELECT aa.ACTOR INTO :v_technician
+  FROM AEGIS_OEE.ACTION.ACTION_AUDIT aa
+  WHERE aa.OBJECT_REF = :P_WO_ID AND aa.ACTION = 'WO_STARTED'
+  ORDER BY aa.TS DESC LIMIT 1;
+
+  IF (:v_technician IS NOT NULL AND UPPER(TRIM(:P_APPROVER)) = UPPER(TRIM(:v_technician))) THEN
+    INSERT INTO AEGIS_OEE.ACTION.ACTION_AUDIT (AUDIT_ID, TS, ACTOR, ACTION, OBJECT_REF, DETAIL)
+    SELECT :v_audit_id, CURRENT_TIMESTAMP(), :P_APPROVER,
+           'CLOSE_WO_REJECTED', :P_WO_ID,
+           OBJECT_CONSTRUCT('reason', 'Approver must differ from technician',
+                            'technician', :v_technician, 'approver', :P_APPROVER);
+    RETURN OBJECT_CONSTRUCT('status', 'REJECTED', 'reason',
+           'Approver (' || :P_APPROVER || ') must differ from technician (' || :v_technician || ')');
+  END IF;
+
+  -- Dry-run preview
+  IF (:P_DRY_RUN) THEN
+    INSERT INTO AEGIS_OEE.ACTION.ACTION_AUDIT (AUDIT_ID, TS, ACTOR, ACTION, OBJECT_REF, DETAIL)
+    SELECT :v_audit_id, CURRENT_TIMESTAMP(), :P_APPROVER,
+           'CLOSE_WO_DRYRUN', :P_WO_ID,
+           OBJECT_CONSTRUCT('verification_note', :P_VERIFICATION_NOTE);
+    RETURN OBJECT_CONSTRUCT('status', 'DRY_RUN_PREVIEW', 'wo_id', :P_WO_ID,
+           'from', 'RESOLVED', 'to', 'CLOSED', 'approver', :P_APPROVER,
+           'verification_note', :P_VERIFICATION_NOTE, 'technician', :v_technician);
+  END IF;
+
+  -- Execute: transition WO to CLOSED
+  UPDATE AEGIS_OEE.ACTION.WORK_ORDER
+  SET STATE = 'CLOSED',
+      CLOSE_REASON = 'Verified: ' || :P_VERIFICATION_NOTE,
+      CLOSED_AT = CURRENT_TIMESTAMP()
+  WHERE WO_ID = :P_WO_ID AND STATE = 'RESOLVED';
+
+  -- Close linked alert
+  UPDATE AEGIS_OEE.ACTION.ALERT
+  SET STATUS = 'CLOSED'
+  WHERE ALERT_ID = :v_alert_id AND STATUS NOT IN ('CLOSED');
+
+  -- Queue GitHub-close + Slack message to OUTBOX
+  INSERT INTO AEGIS_OEE.ACTION.WORK_ORDER_OUTBOX (OUTBOX_ID, WO_ID, TARGET, PAYLOAD, ATTEMPTS, STATUS)
+  SELECT 'OB_GH_CLOSE_' || TO_VARCHAR(CURRENT_TIMESTAMP(), 'YYYYMMDD_HH24MISSFF3'),
+         :P_WO_ID, 'GITHUB',
+         OBJECT_CONSTRUCT('action', 'close', 'wo_id', :P_WO_ID,
+                          'state_reason', 'completed',
+                          'comment', 'Work order closed by ' || :P_APPROVER || ': ' || :P_VERIFICATION_NOTE),
+         0, 'PENDING';
+
+  CALL AEGIS_OEE.ACTION.NOTIFY_SLACK(OBJECT_CONSTRUCT(
+    'text', 'Work Order Closed: ' || :P_WO_ID,
+    'wo_id', :P_WO_ID, 'asset_id', :v_asset_id,
+    'closed_by', :P_APPROVER, 'verification', :P_VERIFICATION_NOTE
+  ));
+
+  -- Audit
+  INSERT INTO AEGIS_OEE.ACTION.ACTION_AUDIT (AUDIT_ID, TS, ACTOR, ACTION, OBJECT_REF, DETAIL)
+  SELECT :v_audit_id, CURRENT_TIMESTAMP(), :P_APPROVER,
+         'WO_CLOSED', :P_WO_ID,
+         OBJECT_CONSTRUCT('verification_note', :P_VERIFICATION_NOTE,
+                          'alert_closed', :v_alert_id, 'technician', :v_technician);
+
+  RETURN OBJECT_CONSTRUCT('status', 'OK', 'wo_id', :P_WO_ID,
+         'from', 'RESOLVED', 'to', 'CLOSED', 'approver', :P_APPROVER,
+         'alert_closed', :v_alert_id, 'outbox_queued', TRUE);
+END;
+$$;

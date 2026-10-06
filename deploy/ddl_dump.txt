@@ -1,0 +1,799 @@
+================================================================================
+AEGIS_OEE DATABASE — COMPLETE DDL DUMP
+Generated: 2026-10-06
+================================================================================
+
+=== TABLE: AEGIS_OEE.CORE.ASSET ===
+create or replace TABLE ASSET (
+	ASSET_ID VARCHAR(16777216) NOT NULL,
+	LINE_ID VARCHAR(16777216) NOT NULL,
+	SITE_ID VARCHAR(16777216) NOT NULL,
+	ASSET_TYPE VARCHAR(16777216) NOT NULL,
+	MANUFACTURER VARCHAR(16777216),
+	INSTALL_DATE DATE,
+	CRITICALITY NUMBER(1,0) NOT NULL,
+	IDEAL_RPM NUMBER(10,2),
+	IDEAL_CYCLE_S NUMBER(10,2),
+	TEMP_LIMIT_C NUMBER(10,2),
+	VIB_ALERT_MM_S NUMBER(10,4),
+	VIB_DANGER_MM_S NUMBER(10,4),
+	constraint PK_ASSET primary key (ASSET_ID)
+);
+
+=== TABLE: AEGIS_OEE.CORE.DOWNTIME_EVENT ===
+create or replace TABLE DOWNTIME_EVENT (
+	EVENT_ID VARCHAR(16777216) NOT NULL,
+	ASSET_ID VARCHAR(16777216) NOT NULL,
+	START_TS TIMESTAMP_TZ(9) NOT NULL,
+	END_TS TIMESTAMP_TZ(9) NOT NULL,
+	IS_PLANNED BOOLEAN NOT NULL,
+	REASON_CODE VARCHAR(16777216),
+	FAILURE_MODE VARCHAR(16777216),
+	MINUTES FLOAT NOT NULL,
+	constraint PK_DOWNTIME_EVENT primary key (EVENT_ID)
+);
+
+=== TABLE: AEGIS_OEE.CORE.FAILURE_MODE_PARTS ===
+create or replace TABLE FAILURE_MODE_PARTS (
+	FAILURE_MODE VARCHAR(16777216) NOT NULL,
+	ASSET_TYPE VARCHAR(16777216) NOT NULL,
+	PART_ID VARCHAR(16777216) NOT NULL,
+	QTY_REQUIRED NUMBER(10,0) NOT NULL DEFAULT 1
+);
+
+=== TABLE: AEGIS_OEE.CORE.MAINTENANCE_HISTORY ===
+create or replace TABLE MAINTENANCE_HISTORY (
+	WO_HIST_ID VARCHAR(16777216) NOT NULL,
+	ASSET_ID VARCHAR(16777216) NOT NULL,
+	COMPLETED_TS TIMESTAMP_TZ(9) NOT NULL,
+	FAILURE_CODE VARCHAR(16777216),
+	FINDING VARCHAR(16777216),
+	ACTION_TAKEN VARCHAR(16777216),
+	PARTS_USED VARCHAR(16777216),
+	LABOR_HOURS FLOAT,
+	TECHNICIAN_NOTE VARCHAR(16777216),
+	constraint PK_MAINTENANCE_HISTORY primary key (WO_HIST_ID)
+);
+
+=== TABLE: AEGIS_OEE.CORE.MAINTENANCE_WINDOW ===
+create or replace TABLE MAINTENANCE_WINDOW (
+	WINDOW_ID VARCHAR(16777216) NOT NULL,
+	LINE_ID VARCHAR(16777216) NOT NULL,
+	ASSET_ID VARCHAR(16777216),
+	WINDOW_START_TS TIMESTAMP_TZ(9) NOT NULL,
+	WINDOW_END_TS TIMESTAMP_TZ(9) NOT NULL,
+	WINDOW_TYPE VARCHAR(16777216) NOT NULL,
+	CAPACITY_MIN NUMBER(38,0) NOT NULL,
+	BOOKED_MIN NUMBER(38,0) NOT NULL DEFAULT 0,
+	STATUS VARCHAR(16777216) NOT NULL DEFAULT 'OPEN'
+);
+
+=== TABLE: AEGIS_OEE.CORE.PARTS_INVENTORY ===
+create or replace TABLE PARTS_INVENTORY (
+	PART_ID VARCHAR(16777216) NOT NULL,
+	PART_NAME VARCHAR(16777216) NOT NULL,
+	CATEGORY VARCHAR(16777216),
+	ON_HAND_QTY NUMBER(10,0) NOT NULL DEFAULT 0,
+	RESERVED_QTY NUMBER(10,0) NOT NULL DEFAULT 0,
+	REORDER_POINT NUMBER(10,0) NOT NULL DEFAULT 0,
+	UNIT_COST FLOAT NOT NULL,
+	SUPPLIER_NAME VARCHAR(16777216),
+	LEAD_TIME_DAYS NUMBER(5,0) NOT NULL DEFAULT 7,
+	BIN_LOCATION VARCHAR(16777216),
+	constraint PK_PARTS_INVENTORY primary key (PART_ID)
+);
+
+=== TABLE: AEGIS_OEE.CORE.PRODUCTION_ORDER ===
+create or replace TABLE PRODUCTION_ORDER (
+	ORDER_ID VARCHAR(16777216) NOT NULL,
+	LINE_ID VARCHAR(16777216) NOT NULL,
+	PRODUCT_CODE VARCHAR(16777216) NOT NULL,
+	PLANNED_QTY NUMBER(10,0) NOT NULL,
+	IDEAL_CYCLE_S NUMBER(10,2) NOT NULL,
+	PLANNED_START_TS TIMESTAMP_TZ(9) NOT NULL,
+	PLANNED_END_TS TIMESTAMP_TZ(9) NOT NULL,
+	constraint PK_PRODUCTION_ORDER primary key (ORDER_ID)
+);
+
+=== TABLE: AEGIS_OEE.CORE.SHIFT_CALENDAR ===
+create or replace TABLE SHIFT_CALENDAR (
+	SHIFT_DATE DATE NOT NULL,
+	SHIFT_CODE VARCHAR(16777216) NOT NULL,
+	START_TS TIMESTAMP_TZ(9) NOT NULL,
+	END_TS TIMESTAMP_TZ(9) NOT NULL,
+	PLANNED_MINUTES NUMBER(10,0) NOT NULL DEFAULT 480,
+	PLANNED_DOWNTIME_MINUTES NUMBER(10,0) NOT NULL DEFAULT 0,
+	constraint PK_SHIFT_CALENDAR primary key (SHIFT_DATE, SHIFT_CODE)
+);
+
+=== TABLE: AEGIS_OEE.CORE.SHIFT_PLAN ===
+create or replace TABLE SHIFT_PLAN (
+	PLAN_ID VARCHAR(16777216) NOT NULL,
+	PLAN_DATE DATE NOT NULL,
+	SHIFT_CODE VARCHAR(16777216) NOT NULL,
+	LINE_ID VARCHAR(16777216) NOT NULL,
+	ORDER_ID VARCHAR(16777216),
+	PLANNED_QTY NUMBER(38,0),
+	PLANNED_START_TS TIMESTAMP_TZ(9) NOT NULL,
+	PLANNED_END_TS TIMESTAMP_TZ(9) NOT NULL,
+	PLANNED_RUN_MIN NUMBER(38,0) NOT NULL,
+	STATUS VARCHAR(16777216) NOT NULL DEFAULT 'PLANNED'
+);
+
+=== TABLE: AEGIS_OEE.RAW.SENSOR_TELEMETRY ===
+create or replace TABLE SENSOR_TELEMETRY (
+	ASSET_ID VARCHAR(16777216) NOT NULL,
+	TS TIMESTAMP_TZ(9) NOT NULL,
+	VIBRATION_RMS FLOAT,
+	VIBRATION_KURTOSIS FLOAT,
+	TEMP_C FLOAT,
+	RPM FLOAT,
+	LOAD_PCT FLOAT,
+	QUALITY_FLAG VARCHAR(16777216) DEFAULT 'OK',
+	INGEST_TS TIMESTAMP_TZ(9) DEFAULT CURRENT_TIMESTAMP()
+);
+
+=== TABLE: AEGIS_OEE.RAW.PRODUCTION_EVENT ===
+create or replace TABLE PRODUCTION_EVENT (
+	ASSET_ID VARCHAR(16777216) NOT NULL,
+	TS TIMESTAMP_TZ(9) NOT NULL,
+	ORDER_ID VARCHAR(16777216),
+	STATE VARCHAR(16777216) NOT NULL,
+	PRODUCED_COUNT NUMBER(10,0) DEFAULT 0,
+	GOOD_COUNT NUMBER(10,0) DEFAULT 0,
+	REJECT_COUNT NUMBER(10,0) DEFAULT 0,
+	CYCLE_TIME_S FLOAT
+);
+
+=== TABLE: AEGIS_OEE.ACTION.ALERT ===
+create or replace TABLE ALERT (
+	ALERT_ID VARCHAR(16777216) NOT NULL,
+	ASSET_ID VARCHAR(16777216) NOT NULL,
+	ONSET_TS TIMESTAMP_TZ(9) NOT NULL,
+	SEVERITY VARCHAR(16777216) NOT NULL,
+	CONFIDENCE FLOAT,
+	FAILURE_PROBABILITY FLOAT,
+	PREDICTED_MODE VARCHAR(16777216),
+	OEE_IMPACT_EST FLOAT,
+	STATUS VARCHAR(16777216) NOT NULL DEFAULT 'NEW',
+	EVIDENCE VARIANT,
+	constraint PK_ALERT primary key (ALERT_ID)
+);
+
+=== TABLE: AEGIS_OEE.ACTION.WORK_ORDER ===
+create or replace TABLE WORK_ORDER (
+	WO_ID VARCHAR(16777216) NOT NULL,
+	ALERT_ID VARCHAR(16777216),
+	ASSET_ID VARCHAR(16777216) NOT NULL,
+	PRIORITY VARCHAR(16777216),
+	STATE VARCHAR(16777216) NOT NULL DEFAULT 'DRAFT',
+	TITLE VARCHAR(16777216),
+	DESCRIPTION VARCHAR(16777216),
+	EVIDENCE VARIANT,
+	GITHUB_ISSUE_URL VARCHAR(16777216),
+	APPROVED_BY VARCHAR(16777216),
+	APPROVED_TS TIMESTAMP_TZ(9),
+	CLOSE_REASON VARCHAR(16777216),
+	CLOSED_AT TIMESTAMP_TZ(9),
+	constraint PK_WORK_ORDER primary key (WO_ID)
+);
+
+=== TABLE: AEGIS_OEE.ACTION.WORK_ORDER_OUTBOX ===
+create or replace TABLE WORK_ORDER_OUTBOX (
+	OUTBOX_ID VARCHAR(16777216) NOT NULL,
+	WO_ID VARCHAR(16777216) NOT NULL,
+	TARGET VARCHAR(16777216) NOT NULL,
+	PAYLOAD VARIANT,
+	ATTEMPTS NUMBER(5,0) DEFAULT 0,
+	LAST_ERROR VARCHAR(16777216),
+	STATUS VARCHAR(16777216) NOT NULL DEFAULT 'PENDING'
+);
+
+=== TABLE: AEGIS_OEE.ACTION.WO_SCHEDULE ===
+create or replace TABLE WO_SCHEDULE (
+	SCHEDULE_ID VARCHAR(16777216) NOT NULL,
+	WO_ID VARCHAR(16777216) NOT NULL,
+	WINDOW_ID VARCHAR(16777216) NOT NULL,
+	SCHEDULED_START_TS TIMESTAMP_TZ(9),
+	SCHEDULED_END_TS TIMESTAMP_TZ(9),
+	EST_DURATION_MIN NUMBER(38,0) NOT NULL,
+	PARTS_READY_DATE DATE,
+	ORDER_BY_DATE DATE,
+	STATUS VARCHAR(16777216) NOT NULL DEFAULT 'TENTATIVE',
+	RATIONALE VARCHAR(16777216),
+	CREATED_TS TIMESTAMP_TZ(9) DEFAULT CURRENT_TIMESTAMP()
+);
+
+=== TABLE: AEGIS_OEE.ACTION.ACTION_AUDIT ===
+create or replace TABLE ACTION_AUDIT (
+	AUDIT_ID VARCHAR(16777216) NOT NULL,
+	TS TIMESTAMP_TZ(9) NOT NULL DEFAULT CURRENT_TIMESTAMP(),
+	ACTOR VARCHAR(16777216) NOT NULL,
+	ACTION VARCHAR(16777216) NOT NULL,
+	OBJECT_REF VARCHAR(16777216),
+	DETAIL VARIANT
+);
+
+=== TABLE: AEGIS_OEE.ACTION.PURCHASE_REQUISITION ===
+create or replace TABLE PURCHASE_REQUISITION (
+	REQ_ID VARCHAR(16777216) NOT NULL,
+	WO_ID VARCHAR(16777216),
+	PART_ID VARCHAR(16777216) NOT NULL,
+	QTY NUMBER(10,0) NOT NULL,
+	EST_UNIT_COST FLOAT,
+	EST_TOTAL FLOAT,
+	SUPPLIER_NAME VARCHAR(16777216),
+	LEAD_TIME_DAYS NUMBER(5,0),
+	RFQ_TEXT VARCHAR(16777216),
+	STATUS VARCHAR(16777216) NOT NULL DEFAULT 'PENDING_QUOTE',
+	CREATED_TS TIMESTAMP_TZ(9) DEFAULT CURRENT_TIMESTAMP(),
+	constraint PK_PURCHASE_REQUISITION primary key (REQ_ID)
+);
+
+=== TABLE: AEGIS_OEE.ML.ANOMALY_EVENTS ===
+create or replace TABLE ANOMALY_EVENTS (
+	ASSET_ID VARCHAR(16777216) NOT NULL,
+	TS TIMESTAMP_TZ(9) NOT NULL,
+	SERIES_NAME VARCHAR(16777216) NOT NULL,
+	IS_ANOMALY BOOLEAN,
+	DISTANCE FLOAT,
+	PERCENTILE FLOAT,
+	FORECAST FLOAT,
+	LOWER FLOAT,
+	UPPER FLOAT
+);
+
+=== TABLE: AEGIS_OEE.ML.SIGNAL_FORECASTS ===
+create or replace TABLE SIGNAL_FORECASTS (
+	SERIES_TYPE VARCHAR(16777216) NOT NULL,
+	SERIES_ID VARCHAR(16777216) NOT NULL,
+	TS TIMESTAMP_NTZ(9) NOT NULL,
+	FORECAST FLOAT,
+	LOWER_BOUND FLOAT,
+	UPPER_BOUND FLOAT,
+	GENERATED_AT TIMESTAMP_TZ(9) DEFAULT CURRENT_TIMESTAMP()
+);
+
+=== TABLE: AEGIS_OEE.SEMANTIC.MAINTENANCE_DOCS ===
+create or replace TABLE MAINTENANCE_DOCS (
+	DOC_ID VARCHAR(16777216) NOT NULL,
+	ASSET_ID VARCHAR(16777216),
+	DOC_TYPE VARCHAR(16777216),
+	TITLE VARCHAR(16777216),
+	CONTENT VARCHAR(16777216),
+	SOURCE VARCHAR(16777216),
+	CREATED_AT TIMESTAMP_NTZ(9) DEFAULT CURRENT_TIMESTAMP()
+);
+
+=== TABLE: AEGIS_OEE.TEST.GROUND_TRUTH_FAILURES ===
+create or replace TABLE GROUND_TRUTH_FAILURES (
+	FAILURE_ID VARCHAR(16777216) NOT NULL,
+	ASSET_ID VARCHAR(16777216) NOT NULL,
+	FAILURE_MODE VARCHAR(16777216) NOT NULL,
+	DEGRADATION_START_TS TIMESTAMP_TZ(9) NOT NULL,
+	FAILURE_TS TIMESTAMP_TZ(9) NOT NULL,
+	SEVERITY VARCHAR(16777216),
+	constraint PK_GROUND_TRUTH_FAILURES primary key (FAILURE_ID)
+);
+
+=== TABLE: AEGIS_OEE.TEST.VALIDATION_RESULTS ===
+create or replace TABLE VALIDATION_RESULTS (
+	CHECK_NAME VARCHAR(16777216) NOT NULL,
+	STATUS VARCHAR(16777216) NOT NULL,
+	DETAIL VARCHAR(16777216),
+	CHECKED_AT TIMESTAMP_TZ(9) DEFAULT CURRENT_TIMESTAMP()
+);
+
+=== TABLE: AEGIS_OEE.TEST.ML_METRICS ===
+create or replace TABLE ML_METRICS (
+	METRIC_NAME VARCHAR(16777216),
+	METRIC_VALUE FLOAT,
+	DETAIL VARCHAR(16777216),
+	EVALUATED_AT TIMESTAMP_TZ(9) DEFAULT CURRENT_TIMESTAMP()
+);
+
+=== TABLE: AEGIS_OEE.TEST.ENV_PROBES ===
+create or replace TABLE ENV_PROBES (
+	PROBE_NAME VARCHAR(16777216),
+	RESULT VARCHAR(16777216),
+	DETAIL VARCHAR(16777216),
+	PROBED_AT TIMESTAMP_TZ(9)
+);
+
+=== TABLE: AEGIS_OEE.TEST.ACTION_GUARDRAIL_RESULTS ===
+create or replace TABLE ACTION_GUARDRAIL_RESULTS (
+	TEST_NAME VARCHAR(16777216) NOT NULL,
+	RESULT VARCHAR(16777216) NOT NULL,
+	DETAIL VARCHAR(16777216),
+	TESTED_AT TIMESTAMP_TZ(9) DEFAULT CURRENT_TIMESTAMP()
+);
+
+=== TABLE: AEGIS_OEE.TEST.AGENT_EVAL_RESULTS ===
+create or replace TABLE AGENT_EVAL_RESULTS (
+	QUESTION_ID NUMBER(38,0),
+	CATEGORY VARCHAR(16777216),
+	QUESTION VARCHAR(16777216),
+	RESULT VARCHAR(16777216),
+	LATENCY_S NUMBER(38,0),
+	NOTES VARCHAR(16777216),
+	TESTED_AT TIMESTAMP_TZ(9) DEFAULT CURRENT_TIMESTAMP()
+);
+
+=== FUNCTION: AEGIS_OEE.ACTION.GET_EST_DURATION_MIN(VARCHAR, VARCHAR) ===
+CREATE OR REPLACE FUNCTION "GET_EST_DURATION_MIN"("P_FAILURE_MODE" VARCHAR, "P_ASSET_TYPE" VARCHAR)
+RETURNS NUMBER(38,0)
+LANGUAGE SQL
+AS '
+    SELECT COALESCE(
+        NULLIF(CEIL(AVG(mh.LABOR_HOURS) * 60), 0),
+        120
+    )::NUMBER
+    FROM AEGIS_OEE.CORE.MAINTENANCE_HISTORY mh
+    JOIN AEGIS_OEE.CORE.ASSET a ON mh.ASSET_ID = a.ASSET_ID
+    WHERE mh.FAILURE_CODE = P_FAILURE_MODE AND a.ASSET_TYPE = P_ASSET_TYPE
+';
+
+=== VIEW: AEGIS_OEE.ML.V_TRAIN_VIB_HEALTHY ===
+create or replace view V_TRAIN_VIB_HEALTHY(
+	ASSET_ID,
+	MINUTE_TS,
+	VIB_RMS_MEAN
+) as
+SELECT s.ASSET_ID, TIME_SLICE(s.MINUTE_TS::TIMESTAMP_NTZ, 5, 'MINUTE', 'START') AS MINUTE_TS, AVG(s.VIB_RMS_MEAN) AS VIB_RMS_MEAN
+FROM FEATURES.DT_SENSOR_1MIN s
+WHERE s.VIB_RMS_MEAN IS NOT NULL AND s.MINUTE_TS < '2026-07-28'::TIMESTAMP_TZ
+  AND NOT EXISTS (SELECT 1 FROM TEST.GROUND_TRUTH_FAILURES g WHERE g.ASSET_ID = s.ASSET_ID AND s.MINUTE_TS >= g.DEGRADATION_START_TS AND s.MINUTE_TS <= g.FAILURE_TS)
+GROUP BY s.ASSET_ID, TIME_SLICE(s.MINUTE_TS::TIMESTAMP_NTZ, 5, 'MINUTE', 'START');
+
+=== VIEW: AEGIS_OEE.ML.V_TRAIN_TEMP_HEALTHY ===
+create or replace view V_TRAIN_TEMP_HEALTHY(
+	ASSET_ID,
+	MINUTE_TS,
+	TEMP_C_MEAN
+) as
+SELECT s.ASSET_ID, TIME_SLICE(s.MINUTE_TS::TIMESTAMP_NTZ, 5, 'MINUTE', 'START') AS MINUTE_TS, AVG(s.TEMP_C_MEAN) AS TEMP_C_MEAN
+FROM FEATURES.DT_SENSOR_1MIN s
+WHERE s.TEMP_C_MEAN IS NOT NULL AND s.MINUTE_TS < '2026-07-28'::TIMESTAMP_TZ
+  AND NOT EXISTS (SELECT 1 FROM TEST.GROUND_TRUTH_FAILURES g WHERE g.ASSET_ID = s.ASSET_ID AND s.MINUTE_TS >= g.DEGRADATION_START_TS AND s.MINUTE_TS <= g.FAILURE_TS)
+GROUP BY s.ASSET_ID, TIME_SLICE(s.MINUTE_TS::TIMESTAMP_NTZ, 5, 'MINUTE', 'START');
+
+=== VIEW: AEGIS_OEE.ML.V_TRAIN_RPM_HEALTHY ===
+create or replace view V_TRAIN_RPM_HEALTHY(
+	ASSET_ID,
+	MINUTE_TS,
+	RPM_MEAN
+) as
+SELECT s.ASSET_ID, TIME_SLICE(s.MINUTE_TS::TIMESTAMP_NTZ, 5, 'MINUTE', 'START') AS MINUTE_TS, AVG(s.RPM_MEAN) AS RPM_MEAN
+FROM FEATURES.DT_SENSOR_1MIN s
+WHERE s.RPM_MEAN IS NOT NULL AND s.MINUTE_TS < '2026-07-28'::TIMESTAMP_TZ
+  AND NOT EXISTS (SELECT 1 FROM TEST.GROUND_TRUTH_FAILURES g WHERE g.ASSET_ID = s.ASSET_ID AND s.MINUTE_TS >= g.DEGRADATION_START_TS AND s.MINUTE_TS <= g.FAILURE_TS)
+GROUP BY s.ASSET_ID, TIME_SLICE(s.MINUTE_TS::TIMESTAMP_NTZ, 5, 'MINUTE', 'START');
+
+=== VIEW: AEGIS_OEE.ML.V_VIB_HOURLY ===
+create or replace view V_VIB_HOURLY(
+	ASSET_ID,
+	HOUR_TS,
+	VIB_RMS_MEAN
+) as
+SELECT ASSET_ID, DATE_TRUNC('HOUR', MINUTE_TS)::TIMESTAMP_NTZ AS HOUR_TS, AVG(VIB_RMS_MEAN) AS VIB_RMS_MEAN
+FROM FEATURES.DT_SENSOR_1MIN WHERE VIB_RMS_MEAN IS NOT NULL
+GROUP BY ASSET_ID, DATE_TRUNC('HOUR', MINUTE_TS);
+
+=== VIEW: AEGIS_OEE.ML.V_OEE_DAILY ===
+create or replace view V_OEE_DAILY(
+	LINE_ID,
+	DAY_TS,
+	OEE_AVG
+) as
+SELECT LINE_ID, SHIFT_DATE::TIMESTAMP_NTZ AS DAY_TS, AVG(OEE)::FLOAT AS OEE_AVG
+FROM SEMANTIC.DT_SHIFT_OEE GROUP BY LINE_ID, SHIFT_DATE;
+
+=== VIEW: AEGIS_OEE.SEMANTIC.V_MTBF_MTTR ===
+create or replace view V_MTBF_MTTR(
+	ASSET_ID,
+	ASSET_TYPE,
+	LINE_ID,
+	FAILURE_COUNT,
+	TOTAL_UNPLANNED_DOWNTIME_MIN,
+	TOTAL_RUN_MIN,
+	MTBF_MIN,
+	MTTR_MIN
+) as
+WITH asset_runtime AS (
+  SELECT asset_id, SUM(run_min) AS total_run_min
+  FROM AEGIS_OEE.SEMANTIC.DT_SHIFT_OEE
+  GROUP BY asset_id
+),
+asset_failures AS (
+  SELECT
+    asset_id,
+    COUNT(*)     AS failure_count,
+    SUM(minutes) AS total_downtime_min
+  FROM AEGIS_OEE.CORE.DOWNTIME_EVENT
+  WHERE is_planned = FALSE
+  GROUP BY asset_id
+)
+SELECT
+  a.asset_id,
+  a.asset_type,
+  a.line_id,
+  COALESCE(af.failure_count, 0)          AS failure_count,
+  COALESCE(af.total_downtime_min, 0)     AS total_unplanned_downtime_min,
+  COALESCE(ar.total_run_min, 0)          AS total_run_min,
+  CASE WHEN COALESCE(af.failure_count, 0) > 0
+    THEN ar.total_run_min / af.failure_count
+    ELSE NULL END                          AS mtbf_min,
+  CASE WHEN COALESCE(af.failure_count, 0) > 0
+    THEN af.total_downtime_min / af.failure_count
+    ELSE NULL END                          AS mttr_min
+FROM AEGIS_OEE.CORE.ASSET a
+LEFT JOIN asset_runtime ar  ON a.asset_id = ar.asset_id
+LEFT JOIN asset_failures af ON a.asset_id = af.asset_id;
+
+=== VIEW: AEGIS_OEE.SEMANTIC.V_SIX_BIG_LOSSES ===
+create or replace view V_SIX_BIG_LOSSES(
+	LINE_ID, ASSET_ID, SHIFT_DATE, SHIFT_CODE, PLANNED_MIN,
+	BREAKDOWN_LOSS_MIN, SPEED_LOSS_MIN, QUALITY_LOSS_MIN, FULLY_PRODUCTIVE_MIN,
+	RUN_MIN, AVAILABILITY, PERFORMANCE, QUALITY, OEE
+) as
+WITH base AS (
+  SELECT line_id, asset_id, shift_date, shift_code, planned_min, downtime_min, run_min,
+    total_count, good_count, reject_count, ideal_cycle_s, availability, performance, quality, oee,
+    LEAST(run_min, ideal_cycle_s * total_count / 60.0) AS net_operating_min
+  FROM AEGIS_OEE.SEMANTIC.DT_SHIFT_OEE
+  WHERE ideal_cycle_s IS NOT NULL AND total_count > 0
+)
+SELECT line_id, asset_id, shift_date, shift_code, planned_min,
+  downtime_min AS breakdown_loss_min,
+  (run_min - net_operating_min) AS speed_loss_min,
+  CASE WHEN total_count > 0 THEN net_operating_min * (reject_count::FLOAT / total_count) ELSE 0 END AS quality_loss_min,
+  CASE WHEN total_count > 0 THEN net_operating_min * (good_count::FLOAT / total_count) ELSE 0 END AS fully_productive_min,
+  run_min, availability, performance, quality, oee
+FROM base;
+
+=== PROCEDURE: AEGIS_OEE.ACTION.SCORE_ALERTS() ===
+CREATE OR REPLACE PROCEDURE "SCORE_ALERTS"()
+RETURNS VARCHAR
+LANGUAGE SQL
+EXECUTE AS CALLER
+AS '
+BEGIN
+  MERGE INTO AEGIS_OEE.ACTION.ALERT tgt
+  USING (
+    WITH asset_health AS (
+      SELECT
+        h.ASSET_ID, h.FAILURE_PROBABILITY_24H, h.PREDICTED_MODE, h.ANOMALY_DISTANCE,
+        h.HEALTH_SCORE, h.RISK_LEVEL, h.LAST_READING_TS,
+        a.CRITICALITY, a.ASSET_TYPE, a.LINE_ID
+      FROM AEGIS_OEE.FEATURES.DT_ASSET_HEALTH h
+      JOIN AEGIS_OEE.CORE.ASSET a ON h.ASSET_ID = a.ASSET_ID
+      WHERE h.PREDICTED_MODE IS NOT NULL AND h.FAILURE_PROBABILITY_24H > 0.05
+    ),
+    anomaly_stats AS (
+      SELECT ASSET_ID,
+        COUNT(CASE WHEN IS_ANOMALY THEN 1 END) AS anomaly_windows_6h,
+        COUNT(*) AS total_windows_6h
+      FROM AEGIS_OEE.ML.ANOMALY_EVENTS
+      WHERE TS >= DATEADD(''HOUR'', -6, CURRENT_TIMESTAMP())
+      GROUP BY ASSET_ID
+    ),
+    data_quality AS (
+      SELECT ASSET_ID,
+        COUNT(CASE WHEN QUALITY_FLAG != ''OK'' THEN 1 END)::FLOAT / NULLIF(COUNT(*), 0) AS bad_pct
+      FROM AEGIS_OEE.RAW.SENSOR_TELEMETRY
+      WHERE TS >= DATEADD(''HOUR'', -6, CURRENT_TIMESTAMP())
+      GROUP BY ASSET_ID
+    ),
+    scored AS (
+      SELECT ah.ASSET_ID, ah.PREDICTED_MODE, ah.FAILURE_PROBABILITY_24H, ah.ANOMALY_DISTANCE,
+        ah.HEALTH_SCORE, ah.RISK_LEVEL, ah.CRITICALITY, ah.LAST_READING_TS,
+        LEAST(1.0, ah.ANOMALY_DISTANCE / 10.0) AS model_confidence,
+        CASE WHEN COALESCE(dq.bad_pct, 0) > 0.2 THEN 0.0 ELSE 1.0 - COALESCE(dq.bad_pct, 0) END AS data_quality_score,
+        LEAST(1.0, COALESCE(ans.anomaly_windows_6h, 0)::FLOAT / GREATEST(COALESCE(ans.total_windows_6h, 1), 1)) AS evidence_agreement,
+        COALESCE(ans.anomaly_windows_6h, 0)::FLOAT / GREATEST(COALESCE(ans.total_windows_6h, 1), 1) AS persistence,
+        CASE WHEN ah.FAILURE_PROBABILITY_24H >= 0.7 THEN 1.0 WHEN ah.FAILURE_PROBABILITY_24H >= 0.3 THEN 0.6 ELSE 0.3 END AS imminence,
+        CASE WHEN ah.HEALTH_SCORE <= 30 THEN 0.3 WHEN ah.HEALTH_SCORE <= 50 THEN 0.2 WHEN ah.HEALTH_SCORE <= 70 THEN 0.1 ELSE 0.05 END AS oee_impact_est
+      FROM asset_health ah
+      LEFT JOIN anomaly_stats ans ON ah.ASSET_ID = ans.ASSET_ID
+      LEFT JOIN data_quality dq ON ah.ASSET_ID = dq.ASSET_ID
+    ),
+    final_scored AS (
+      SELECT s.*,
+        s.model_confidence * s.data_quality_score * s.evidence_agreement * s.persistence AS confidence,
+        s.FAILURE_PROBABILITY_24H * (s.CRITICALITY / 5.0) * s.imminence * s.oee_impact_est AS priority_score
+      FROM scored s
+    )
+    SELECT
+      ''ALT_'' || f.ASSET_ID || ''_'' || f.PREDICTED_MODE AS alert_id,
+      f.ASSET_ID, f.LAST_READING_TS AS onset_ts,
+      CASE WHEN f.priority_score >= 0.5 THEN ''P1'' WHEN f.priority_score >= 0.25 THEN ''P2'' ELSE ''P3'' END AS severity,
+      f.confidence, f.FAILURE_PROBABILITY_24H AS failure_probability, f.PREDICTED_MODE AS predicted_mode, f.oee_impact_est,
+      CASE WHEN f.confidence < 0.5 THEN ''NEW'' ELSE ''TRIAGED'' END AS computed_status,
+      OBJECT_CONSTRUCT(
+        ''asset_id'', f.ASSET_ID, ''model_version'', ''AD_v1_ZSCORE_v1'',
+        ''prediction'', OBJECT_CONSTRUCT(''failure_probability_24h'', f.FAILURE_PROBABILITY_24H, ''predicted_mode'', f.PREDICTED_MODE),
+        ''anomaly'', OBJECT_CONSTRUCT(''distance'', f.ANOMALY_DISTANCE, ''persistence'', f.persistence),
+        ''oee_impact'', OBJECT_CONSTRUCT(''component'', ''availability'', ''est_loss_pct'', f.oee_impact_est),
+        ''health_score'', f.HEALTH_SCORE, ''risk_level'', f.RISK_LEVEL, ''priority_score'', f.priority_score
+      ) AS evidence
+    FROM final_scored f
+  ) src
+  ON tgt.ALERT_ID = src.alert_id AND tgt.STATUS NOT IN (''CLOSED'', ''SUPPRESSED'')
+  WHEN MATCHED THEN UPDATE SET
+    SEVERITY = src.severity, CONFIDENCE = src.confidence, FAILURE_PROBABILITY = src.failure_probability,
+    OEE_IMPACT_EST = src.oee_impact_est, EVIDENCE = src.evidence
+  WHEN NOT MATCHED THEN INSERT (ALERT_ID, ASSET_ID, ONSET_TS, SEVERITY, CONFIDENCE, FAILURE_PROBABILITY, PREDICTED_MODE, OEE_IMPACT_EST, STATUS, EVIDENCE)
+  VALUES (src.alert_id, src.ASSET_ID, src.onset_ts, src.severity, src.confidence, src.failure_probability, src.predicted_mode, src.oee_impact_est, src.computed_status, src.evidence);
+
+  RETURN ''SCORE_ALERTS complete: '' || (SELECT COUNT(*) FROM AEGIS_OEE.ACTION.ALERT WHERE STATUS IN (''NEW'',''TRIAGED''))::STRING || '' open alerts'';
+END;
+';
+
+
+=== PROCEDURE: AEGIS_OEE.ACTION.GET_ASSET_EVIDENCE(VARCHAR) ===
+-- Full evidence bundle retrieval. Queries: DT_ASSET_HEALTH, ASSET, DT_SENSOR_FEATURES_15MIN (24h),
+-- ANOMALY_EVENTS (7d anomalies), MAINTENANCE_HISTORY, DOWNTIME_EVENT (30d unplanned),
+-- DT_SHIFT_OEE (7d), ALERT (open). Returns VARIANT with all sub-objects.
+-- EXECUTE AS CALLER, LANGUAGE SQL
+
+=== PROCEDURE: AEGIS_OEE.ACTION.PROPOSE_WORK_ORDER(VARCHAR) ===
+-- Draft WO proposal. Reads ALERT, ASSET, FAILURE_MODE_PARTS+PARTS_INVENTORY, MAINTENANCE_HISTORY.
+-- Maps failure_mode to recommended_action. Writes ACTION_AUDIT only. Returns DRAFT JSON.
+-- EXECUTE AS CALLER, LANGUAGE SQL
+
+=== PROCEDURE: AEGIS_OEE.ACTION.CREATE_WORK_ORDER(VARCHAR, VARCHAR, BOOLEAN) ===
+-- Creates approved WO. Guards: alert ACKED, real approver, no dup open WO.
+-- Calls CHECK_PARTS, reserves available parts, links requisitions, queues GitHub+Slack,
+-- calls AUTO_SCHEDULE_WO. DRY_RUN default TRUE.
+-- EXECUTE AS CALLER, LANGUAGE SQL
+
+=== PROCEDURE: AEGIS_OEE.ACTION.CHECK_PARTS(VARCHAR) ===
+-- Parts availability check. Creates PURCHASE_REQUISITION for shortages with AI-drafted RFQ
+-- via SNOWFLAKE.CORTEX.COMPLETE('llama3.1-8b', ...). Writes ACTION_AUDIT.
+-- EXECUTE AS CALLER, LANGUAGE SQL
+
+=== PROCEDURE: AEGIS_OEE.ACTION.START_WORK_ORDER(VARCHAR, VARCHAR, VARCHAR, BOOLEAN) ===
+-- APPROVED/SYNCED → IN_PROGRESS. Validates technician (real person), parts reserved >= kit.
+-- Updates WO_SCHEDULE to IN_PROGRESS. DRY_RUN default TRUE.
+-- EXECUTE AS CALLER, LANGUAGE SQL
+
+=== PROCEDURE: AEGIS_OEE.ACTION.COMPLETE_WORK_ORDER(VARCHAR, VARCHAR, VARCHAR, VARCHAR, FLOAT, VARIANT, VARCHAR, BOOLEAN) ===
+-- IN_PROGRESS → RESOLVED. Consumes parts (decrement on_hand+reserved), writes MAINTENANCE_HISTORY,
+-- marks WO_SCHEDULE COMPLETED with actual vs estimated duration. Outcome: FIXED or PARTIAL.
+-- EXECUTE AS CALLER, LANGUAGE SQL
+
+=== PROCEDURE: AEGIS_OEE.ACTION.CLOSE_WORK_ORDER(VARCHAR, VARCHAR, VARCHAR, BOOLEAN) ===
+-- RESOLVED → CLOSED. Approver must differ from technician. Closes linked alert.
+-- Queues GitHub-close + Slack to OUTBOX. Calls NOTIFY_SLACK.
+-- EXECUTE AS CALLER, LANGUAGE SQL
+
+=== PROCEDURE: AEGIS_OEE.ACTION.UPDATE_REQUISITION_STATUS(VARCHAR, VARCHAR, VARCHAR, VARCHAR, BOOLEAN) ===
+-- Valid transitions: PENDING_QUOTE→QUOTED→ORDERED→RECEIVED, any→CANCELLED.
+-- RECEIVED: increments on_hand, reserves for linked WO up to shortage.
+-- EXECUTE AS CALLER, LANGUAGE SQL
+
+=== PROCEDURE: AEGIS_OEE.ACTION.PROPOSE_SCHEDULE(VARCHAR) ===
+-- Returns qualifying maintenance windows ranked by: production_loss (prefer non-production), window_start, wasted capacity.
+-- Uses GET_EST_DURATION_MIN UDF. Computes parts_ready_date from open requisitions.
+-- Detects EXPEDITE if earliest window > predicted failure timestamp.
+-- Returns expedited alternatives when EXPEDITE.
+-- EXECUTE AS CALLER, LANGUAGE SQL
+
+=== PROCEDURE: AEGIS_OEE.ACTION.AUTO_SCHEDULE_WO(VARCHAR, VARCHAR) ===
+-- Called by CREATE_WORK_ORDER. Calls PROPOSE_SCHEDULE, picks top window, inserts WO_SCHEDULE,
+-- books window capacity, updates requisition RFQ with order-by date, calls ENRICH_OUTBOX_WITH_SCHEDULE.
+-- EXECUTE AS CALLER, LANGUAGE SQL
+
+=== PROCEDURE: AEGIS_OEE.ACTION.SCHEDULE_WORK_ORDER(VARCHAR, VARCHAR, VARCHAR, BOOLEAN) ===
+-- Manual scheduling. Validates: approver, WO state (APPROVED/SYNCED/IN_PROGRESS), window capacity,
+-- line match, parts_ready_date. Cancels existing schedule on rebook. DRY_RUN default TRUE.
+-- EXECUTE AS CALLER, LANGUAGE SQL
+
+=== PROCEDURE: AEGIS_OEE.ACTION.RETRY_OUTBOX() ===
+-- Retries pending SLACK outbox entries (no webhook configured = outbox fallback).
+-- Marks DEAD after 5 attempts. Writes ACTION_AUDIT.
+-- EXECUTE AS CALLER, LANGUAGE SQL
+
+=== PROCEDURE: AEGIS_OEE.ACTION.QUEUE_GITHUB_SYNC(VARCHAR) ===
+-- Queues GitHub issue to OUTBOX. Payload includes: WO, alert, parts_availability, purchase_requisitions.
+-- EXECUTE AS CALLER, LANGUAGE SQL
+
+=== PROCEDURE: AEGIS_OEE.ACTION.NOTIFY_SLACK(VARIANT) ===
+-- Queues Slack notification to WORK_ORDER_OUTBOX. Writes ACTION_AUDIT.
+-- EXECUTE AS CALLER, LANGUAGE SQL
+
+=== PROCEDURE: AEGIS_OEE.ACTION.ENRICH_OUTBOX_WITH_SCHEDULE(VARCHAR) ===
+-- Adds latest WO_SCHEDULE details to pending outbox entries via OBJECT_INSERT.
+-- EXECUTE AS CALLER, LANGUAGE SQL
+
+=== PROCEDURE: AEGIS_OEE.ML.DETECT_ANOMALIES() ===
+-- Scores last 24h via AD_VIBRATION, AD_TEMPERATURE, AD_RPM Snowflake ML anomaly detection models.
+-- MERGE into ML.ANOMALY_EVENTS (vibration_rms, temp_c, rpm series).
+-- EXECUTE AS CALLER, LANGUAGE SQL
+
+=== PROCEDURE: AEGIS_OEE.ML.DETECT_ANOMALIES_BACKFILL() ===
+-- Full backfill from 2026-07-28. DELETE+INSERT into ANOMALY_EVENTS for all 3 series.
+-- Uses same AD_* models as DETECT_ANOMALIES.
+-- EXECUTE AS CALLER, LANGUAGE SQL
+
+=== PROCEDURE: AEGIS_OEE.ML.DETECT_ZSCORE_ANOMALIES() ===
+-- Z-score anomaly detection (last 24h). Requires 3 consecutive 15-min windows with |z| > 2.5.
+-- Series: zscore_vibration, zscore_temp, zscore_rpm. MERGE into ANOMALY_EVENTS.
+-- EXECUTE AS CALLER, LANGUAGE SQL
+
+=== PROCEDURE: AEGIS_OEE.ML.DETECT_ZSCORE_ANOMALIES_BACKFILL() ===
+-- Full z-score backfill (all history). INSERT into ANOMALY_EVENTS.
+-- EXECUTE AS CALLER, LANGUAGE SQL
+
+=== PROCEDURE: AEGIS_OEE.ML.TEST_PROC() ===
+-- Simple test: RETURN 'ok';
+-- EXECUTE AS CALLER, LANGUAGE SQL
+
+=== PROCEDURE: AEGIS_OEE.CORE.REFRESH_CMMS_PLAN() ===
+-- Cleans up: past SHIFT_PLAN rows, old empty MAINTENANCE_WINDOW, cancelled WO_SCHEDULE.
+-- Releases booked capacity for removed schedules. Deletes cancelled schedules.
+-- EXECUTE AS CALLER, LANGUAGE SQL
+
+=== DYNAMIC TABLE: AEGIS_OEE.FEATURES.DT_SENSOR_CLEAN ===
+CREATE OR REPLACE DYNAMIC TABLE AEGIS_OEE.FEATURES.DT_SENSOR_CLEAN
+   lag = '1 minute' refresh_mode = 'AUTO' initialize = 'ON_CREATE' warehouse = AEGIS_WH
+AS
+WITH deduped AS (
+  SELECT
+    asset_id, ts,
+    MAX_BY(quality_flag, ingest_ts)       AS quality_flag,
+    MAX_BY(vibration_rms, ingest_ts)      AS vibration_rms_raw,
+    MAX_BY(vibration_kurtosis, ingest_ts) AS vibration_kurtosis_raw,
+    MAX_BY(temp_c, ingest_ts)             AS temp_c_raw,
+    MAX_BY(rpm, ingest_ts)                AS rpm_raw,
+    MAX_BY(load_pct, ingest_ts)           AS load_pct_raw,
+    MAX(ingest_ts)                        AS ingest_ts
+  FROM AEGIS_OEE.RAW.SENSOR_TELEMETRY
+  GROUP BY asset_id, ts
+)
+SELECT
+  asset_id, ts, quality_flag,
+  CASE WHEN quality_flag = 'OK' THEN GREATEST(LEAST(vibration_rms_raw, 50.0), 0.0) END AS vibration_rms,
+  CASE WHEN quality_flag = 'OK' THEN vibration_kurtosis_raw END AS vibration_kurtosis,
+  CASE WHEN quality_flag = 'OK' THEN GREATEST(LEAST(temp_c_raw, 200.0), 0.0) END AS temp_c,
+  CASE WHEN quality_flag = 'OK' THEN GREATEST(LEAST(rpm_raw, 20000.0), 0.0) END AS rpm,
+  CASE WHEN quality_flag = 'OK' THEN GREATEST(LEAST(load_pct_raw, 100.0), 0.0) END AS load_pct,
+  ingest_ts
+FROM deduped;
+
+=== DYNAMIC TABLE: AEGIS_OEE.FEATURES.DT_SENSOR_1MIN ===
+CREATE OR REPLACE DYNAMIC TABLE AEGIS_OEE.FEATURES.DT_SENSOR_1MIN
+   lag = '1 minute' refresh_mode = 'AUTO' initialize = 'ON_CREATE' warehouse = AEGIS_WH
+AS
+SELECT
+  asset_id,
+  DATE_TRUNC('MINUTE', ts) AS minute_ts,
+  AVG(vibration_rms) AS vib_rms_mean, MAX(vibration_rms) AS vib_rms_max, STDDEV(vibration_rms) AS vib_rms_stddev,
+  AVG(vibration_kurtosis) AS vib_kurt_mean, MAX(vibration_kurtosis) AS vib_kurt_max,
+  AVG(temp_c) AS temp_c_mean, MAX(temp_c) AS temp_c_max, STDDEV(temp_c) AS temp_c_stddev,
+  AVG(rpm) AS rpm_mean, MAX(rpm) AS rpm_max, STDDEV(rpm) AS rpm_stddev,
+  AVG(load_pct) AS load_pct_mean, MAX(load_pct) AS load_pct_max, STDDEV(load_pct) AS load_pct_stddev,
+  COUNT(*) AS sample_count
+FROM AEGIS_OEE.FEATURES.DT_SENSOR_CLEAN
+WHERE quality_flag = 'OK'
+GROUP BY asset_id, DATE_TRUNC('MINUTE', ts);
+
+=== DYNAMIC TABLE: AEGIS_OEE.FEATURES.DT_SENSOR_FEATURES_15MIN ===
+CREATE OR REPLACE DYNAMIC TABLE AEGIS_OEE.FEATURES.DT_SENSOR_FEATURES_15MIN
+   lag = '5 minutes' refresh_mode = 'AUTO' initialize = 'ON_CREATE' warehouse = AEGIS_WH
+AS
+WITH agg_15m AS (
+  SELECT
+    asset_id,
+    TIME_SLICE(minute_ts::TIMESTAMP_NTZ, 15, 'MINUTE', 'START') AS window_ts,
+    AVG(vib_rms_mean) AS vib_rms_mean, MAX(vib_rms_max) AS vib_rms_max, STDDEV(vib_rms_mean) AS vib_rms_stddev,
+    AVG(vib_kurt_mean) AS kurtosis_mean, MAX(vib_kurt_max) AS kurtosis_max,
+    AVG(temp_c_mean) AS temp_c_mean, MAX(temp_c_max) AS temp_c_max, STDDEV(temp_c_mean) AS temp_c_stddev,
+    AVG(rpm_mean) AS rpm_mean, VARIANCE(rpm_mean) AS rpm_variance,
+    AVG(load_pct_mean) AS load_pct_mean,
+    SUM(sample_count) AS sample_count,
+    REGR_SLOPE(vib_rms_mean, EXTRACT(EPOCH FROM minute_ts)) AS vib_rms_slope,
+    REGR_SLOPE(temp_c_mean, EXTRACT(EPOCH FROM minute_ts)) AS temp_c_slope,
+    REGR_SLOPE(rpm_mean, EXTRACT(EPOCH FROM minute_ts)) AS rpm_slope
+  FROM AEGIS_OEE.FEATURES.DT_SENSOR_1MIN
+  GROUP BY asset_id, TIME_SLICE(minute_ts::TIMESTAMP_NTZ, 15, 'MINUTE', 'START')
+),
+baseline AS (
+  SELECT asset_id,
+    AVG(vib_rms_mean) AS bl_vib_mean, NULLIF(STDDEV(vib_rms_mean), 0) AS bl_vib_std,
+    AVG(temp_c_mean) AS bl_temp_mean, NULLIF(STDDEV(temp_c_mean), 0) AS bl_temp_std,
+    AVG(rpm_mean) AS bl_rpm_mean, NULLIF(STDDEV(rpm_mean), 0) AS bl_rpm_std
+  FROM AEGIS_OEE.FEATURES.DT_SENSOR_1MIN
+  GROUP BY asset_id
+)
+SELECT
+  a.asset_id, a.window_ts,
+  a.vib_rms_mean, a.vib_rms_max, a.vib_rms_stddev, a.vib_rms_slope,
+  a.kurtosis_mean, a.kurtosis_max,
+  a.temp_c_mean, a.temp_c_max, a.temp_c_stddev, a.temp_c_slope,
+  a.rpm_mean, a.rpm_variance, a.rpm_slope,
+  a.load_pct_mean,
+  a.temp_c_mean - (a.load_pct_mean * 0.5 + 20.0) AS temp_load_residual,
+  (a.vib_rms_mean - b.bl_vib_mean) / b.bl_vib_std AS vib_rms_zscore,
+  (a.temp_c_mean - b.bl_temp_mean) / b.bl_temp_std AS temp_c_zscore,
+  (a.rpm_mean - b.bl_rpm_mean) / b.bl_rpm_std AS rpm_zscore,
+  a.sample_count
+FROM agg_15m a
+JOIN baseline b ON a.asset_id = b.asset_id;
+
+=== DYNAMIC TABLE: AEGIS_OEE.FEATURES.DT_ASSET_HEALTH ===
+-- Fuses rule-based health scoring (vibration thresholds, temp limits, z-scores, recent downtime, rpm variance)
+-- with ML anomaly evidence (AD model distances). Outputs: health_score 0-100, anomaly_distance,
+-- failure_probability_24h, predicted_mode, risk_level (LOW/MEDIUM/HIGH/CRITICAL).
+-- lag = '5 minutes', refresh_mode = AUTO (resolved to FULL), warehouse = AEGIS_WH
+
+=== DYNAMIC TABLE: AEGIS_OEE.FEATURES.DT_TELEMETRY_CONTEXT ===
+-- Enriches latest sensor features with: active production order, last maintenance, open downtime.
+-- lag = '5 minutes', refresh_mode = INCREMENTAL, warehouse = AEGIS_WH
+
+=== DYNAMIC TABLE: AEGIS_OEE.SEMANTIC.DT_SHIFT_OEE ===
+-- Shift-level OEE fact table. Joins PRODUCTION_EVENT + ASSET + SHIFT_CALENDAR + DOWNTIME_EVENT.
+-- Computes: planned_min, downtime_min (overlap-allocated), run_min, availability, performance (capped 1.0), quality, oee.
+-- lag = '5 minutes', refresh_mode = INCREMENTAL, warehouse = AEGIS_WH
+
+=== DYNAMIC TABLE: AEGIS_OEE.SEMANTIC.DT_OEE_LINE_DAY ===
+-- Line-day aggregation of DT_SHIFT_OEE. Re-derives A/P/Q/OEE from sums.
+-- lag = '5 minutes', refresh_mode = INCREMENTAL, warehouse = AEGIS_WH
+
+=== CORTEX SEARCH SERVICE: AEGIS_OEE.SEMANTIC.MAINTENANCE_SEARCH ===
+-- Target lag: 1 hour
+-- Warehouse: AEGIS_WH
+-- Search column: CONTENT
+-- Attribute columns: ASSET_ID, DOC_TYPE
+-- All columns: DOC_ID, ASSET_ID, DOC_TYPE, TITLE, CONTENT, SOURCE
+-- Embedding model: snowflake-arctic-embed-m-v1.5
+-- Refresh mode: INCREMENTAL
+-- Source query:
+SELECT DOC_ID, ASSET_ID, DOC_TYPE, TITLE, CONTENT, SOURCE
+FROM AEGIS_OEE.SEMANTIC.MAINTENANCE_DOCS;
+
+=== CORTEX AGENT: AEGIS_OEE.ACTION.AEGIS_RCA_AGENT ===
+-- Retrieved via: SELECT GET_DDL('CORTEX AGENT', 'AEGIS_OEE.ACTION.AEGIS_RCA_AGENT')
+-- Models: orchestration = "auto"
+-- Budget: 120s, 100k tokens
+-- Tools:
+--   manufacturing_analytics (cortex_analyst_text_to_sql) → SEMANTIC.MANUFACTURING_OPERATIONS
+--   maintenance_docs (cortex_search) → SEMANTIC.MAINTENANCE_SEARCH
+--   get_asset_evidence (generic/procedure) → ACTION.GET_ASSET_EVIDENCE
+--   propose_work_order (generic/procedure) → ACTION.PROPOSE_WORK_ORDER
+-- All tool_resources use warehouse AEGIS_APP_WH
+-- Instructions enforce: 7-part RCA structure, confidence gate, hard guardrails (no approve/create/delete)
+-- Orchestration instructions: route to correct tool based on question type
+-- 5 sample questions defined
+
+=== SEMANTIC VIEW: AEGIS_OEE.SEMANTIC.MANUFACTURING_OPERATIONS (FULL DDL) ===
+-- Full DDL retrieved via: SELECT GET_DDL('SEMANTIC VIEW', 'AEGIS_OEE.SEMANTIC.MANUFACTURING_OPERATIONS')
+-- Tables: DT_SHIFT_OEE, ASSET, DOWNTIME_EVENT, PRODUCTION_ORDER, ALERT, WORK_ORDER, DT_ASSET_HEALTH, V_MTBF_MTTR
+-- Relationships: OEE_TO_ASSET, DOWNTIME_TO_ASSET, ALERT_TO_ASSET, WO_TO_ALERT, WO_TO_ASSET, HEALTH_TO_ASSET, MTBF_TO_ASSET
+-- 24 facts, 42 dimensions, 15 metrics (including OEE derived from sums)
+-- 15 verified queries (VQRs)
+-- ai_sql_generation + ai_question_categorization instructions
+-- See deploy/semantic/ for the full YAML-equivalent specification.
+
+NOTE: The full semantic view DDL is ~15KB. Run this to retrieve it:
+  SELECT GET_DDL('SEMANTIC VIEW', 'AEGIS_OEE.SEMANTIC.MANUFACTURING_OPERATIONS');
+
+NOTE: The full agent DDL is ~5KB. Run this to retrieve it:
+  SELECT GET_DDL('CORTEX AGENT', 'AEGIS_OEE.ACTION.AEGIS_RCA_AGENT');
+
+NOTE: Full procedure DDLs can be retrieved individually via:
+  SELECT GET_DDL('PROCEDURE', 'AEGIS_OEE.<SCHEMA>.<PROC_NAME>(<ARG_TYPES>)');
+
+================================================================================
+INVENTORY SUMMARY
+================================================================================
+Tables:           26 (CORE: 9, RAW: 2, ACTION: 5, ML: 2, SEMANTIC: 1, TEST: 5, FEATURES: 0, APP: 0)
+Dynamic Tables:    7 (FEATURES: 5, SEMANTIC: 2)
+Views:             7 (ML: 5, SEMANTIC: 2)
+UDFs:              1 (ACTION: GET_EST_DURATION_MIN)
+Procedures:       22 (ACTION: 16, ML: 5, CORE: 1)
+Semantic Views:    1 (SEMANTIC.MANUFACTURING_OPERATIONS)
+Cortex Agents:     1 (ACTION.AEGIS_RCA_AGENT)
+Cortex Search:     1 (SEMANTIC.MAINTENANCE_SEARCH)
+Stages:            3 (RAW.DOC_STAGE, APP.APP_STAGE, APP.SKILL_STAGE)
+================================================================================

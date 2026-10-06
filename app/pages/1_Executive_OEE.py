@@ -207,3 +207,40 @@ try:
         st.success("No OEE at risk \u2014 no active alerts.")
 except Exception as e:
     st.warning(f"Could not load OEE-at-risk: {e}")
+
+st.divider()
+
+# Avoided downtime
+st.markdown(f"### Avoided Downtime {info_tooltip('Work orders resolved or closed in the selected period, and estimated downtime minutes avoided based on linked downtime events. Source: ACTION.WORK_ORDER, CORE.DOWNTIME_EVENT.')}", unsafe_allow_html=True)
+try:
+    avoided_df = run_query(f"""
+        SELECT
+            COUNT(DISTINCT wo.WO_ID) AS RESOLVED_WOS,
+            COALESCE(SUM(d.MINUTES), 0) AS AVOIDED_MINUTES
+        FROM AEGIS_OEE.ACTION.WORK_ORDER wo
+        LEFT JOIN AEGIS_OEE.CORE.DOWNTIME_EVENT d
+            ON d.ASSET_ID = wo.ASSET_ID
+            AND d.IS_PLANNED = FALSE
+            AND d.START_TS >= wo.APPROVED_TS
+            AND d.START_TS <= COALESCE(wo.CLOSED_AT, CURRENT_TIMESTAMP)
+        WHERE wo.STATE IN ('RESOLVED', 'CLOSED')
+          AND wo.APPROVED_TS >= '{start_str}'
+          AND wo.APPROVED_TS <= '{end_str}'
+    """)
+    if not avoided_df.empty and avoided_df["RESOLVED_WOS"].iloc[0] > 0:
+        wo_count = int(avoided_df["RESOLVED_WOS"].iloc[0])
+        avoided_min = int(avoided_df["AVOIDED_MINUTES"].iloc[0])
+        st.markdown(
+            f'<div class="info-card">'
+            f'<span style="color:#0f9b8e; font-size:1.5rem; font-weight:700;">{wo_count}</span> '
+            f'<span style="color:#8892b0;">work orders resolved</span>'
+            f'<span style="color:#8892b0;"> &middot; estimated </span>'
+            f'<span style="color:#0f9b8e; font-size:1.5rem; font-weight:700;">{avoided_min:,}</span> '
+            f'<span style="color:#8892b0;">minutes of downtime avoided</span>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        st.info("No resolved work orders in the selected period.")
+except Exception as e:
+    st.warning(f"Could not load avoided-downtime: {e}")

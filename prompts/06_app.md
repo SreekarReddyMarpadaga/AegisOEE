@@ -4,7 +4,7 @@ Read `AGENTS.md`. Use the bundled `$developing-with-streamlit` skill; delegate t
 
 ## Objective
 
-Deploy the AegisOEE Command Center as Streamlit in Snowflake (container runtime preferred; check `TEST.ENV_PROBES`, fall back to warehouse runtime + proc wrapper for agent calls, and record which).
+Deploy the AegisOEE Command Center as Streamlit in Snowflake on the **warehouse runtime** (mandatory: cost-friendly and portable — do NOT use container runtime or any compute pool, and do not set `runtime_name`/`compute_pool` in `snowflake.yml`). Agent calls go through `SNOWFLAKE.CORTEX.DATA_AGENT_RUN` / a proc wrapper.
 
 ## Deliverables
 
@@ -12,7 +12,7 @@ Deploy the AegisOEE Command Center as Streamlit in Snowflake (container runtime 
    - **1_Executive_OEE**: OEE/A/P/Q KPI cards with deltas, line comparison, 7-day trend, six-big-losses waterfall, "OEE at risk" card (sum of open-alert est. impact) and avoided-downtime scenario.
    - **2_Alert_Triage**: ranked open alerts (priority, confidence, mode, horizon, OEE impact), actions Acknowledge / Investigate (link to twin) / Suppress-with-reason, each writing audit rows.
    - **3_Asset_Digital_Twin**: asset selector with **line and asset-type filters**; sensor trends with anomaly markers + forecast bands from ML.SIGNAL_FORECASTS; ground-truth-free health gauge; maintenance timeline; open WOs; top model drivers.
-   - **4_Ask_Aegis**: chat to `AEGIS_RCA_AGENT` (Agent REST on container runtime; proc wrapper fallback) with expandable evidence/tool-trace and source records.
+   - **4_Ask_Aegis**: chat to `AEGIS_RCA_AGENT` (`DATA_AGENT_RUN` via SQL on warehouse runtime; `CORTEX.COMPLETE` fallback) with expandable evidence/tool-trace and source records.
    - **5_Work_Order_Review**: 5 tabs — Pending Drafts, Active WOs, Past WOs, **Procurement**, Audit. Proposed drafts with full evidence; **parts panel per draft: required kit, on-hand vs reserved, shortages highlighted, linked purchase requisitions with quote (cost, supplier, lead time) and expandable RFQ text; planned window shows parts-driven delay when applicable**; Approve (typed approver name + confirmation → CREATE_WORK_ORDER dry_run=FALSE) / Reject with reason; audit history table; GitHub/OUTBOX sync status. **WO closure status display: show CLOSE_REASON and CLOSED_AT for terminal-state WOs (RESOLVED/CANCELLED/CLOSED/REJECTED)**. The **Procurement tab** shows all PURCHASE_REQUISITION rows with status, linked WO, part details, costs, and supplier info.
    - **6_Asset_Map**: ISA-95 plant hierarchy (site → lines → assets) as colored tiles. Color by health score (green/amber/red), show OEE and alert count per asset. Click-through to Digital Twin page.
    - Sidebar "Built with CoCo" panel: SNOWFLAKE_COCO_USAGE_HISTORY by INTERFACE (guarded try/except), plus mission/evidence counts from docs metadata table if present.
@@ -27,7 +27,7 @@ Deploy the AegisOEE Command Center as Streamlit in Snowflake (container runtime 
    - `app/snowflake.yml`: `main_file: Home.py`, `environment.yml` listed in `artifacts`, all page files listed explicitly.
    - `app/environment.yml`: conda deps bare or `=version` (never `>=`); never list `streamlit` itself (provided by runtime).
    - Use `st.rerun()` not `st.experimental_rerun()`.
-   - Deploy to `AEGIS_OEE.APP` on `AEGIS_APP_WH` via `snow streamlit deploy --replace --prune`; grants for the demo role; record the app URL/name.
+   - Deploy to `AEGIS_OEE.APP` on `AEGIS_APP_WH` via stage-based PUT + `CREATE OR REPLACE STREAMLIT ... FROM ... RUNTIME_NAME = 'SYSTEM$WAREHOUSE_RUNTIME'` (see `deploy/sql/09_app.sh`). The `snow streamlit deploy` CLI defaults to container runtime after BCR-2342 (2026_06); do NOT use it. Grant USAGE to PUBLIC; record the app URL/name.
 4. Smoke tests: every page renders against current data; approval flow works end-to-end in dry-run; agent chat answers the golden-path question; parts panel shows the seeded shortage with its requisition quote.
 5. Append run record + app object name to `docs/run-records.md`.
 

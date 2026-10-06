@@ -107,7 +107,7 @@ WITH agg_15m AS (
     REGR_SLOPE(temp_c_mean,  EXTRACT(EPOCH FROM minute_ts))   AS temp_c_slope,
     REGR_SLOPE(rpm_mean,     EXTRACT(EPOCH FROM minute_ts))   AS rpm_slope
   FROM FEATURES.DT_SENSOR_1MIN
-  GROUP BY asset_id, TIME_SLICE(minute_ts, 15, 'MINUTE', 'START')
+  GROUP BY asset_id, TIME_SLICE(minute_ts::TIMESTAMP_NTZ, 15, 'MINUTE', 'START')
 ),
 baseline AS (
   SELECT

@@ -20,10 +20,9 @@ check "mcp subcommand available"    cortex mcp list
 say ""
 say "-- GitHub MCP --"
 if [ -z "${GITHUB_PAT:-}" ]; then
-  say "WARN  GITHUB_PAT not set — export it, then run:"
-  say '      cortex mcp add github https://api.githubcopilot.com/mcp/ --type http -H "Authorization: Bearer ${GITHUB_PAT}"'
+  say "WARN  GITHUB_PAT not set — export GITHUB_PAT and GITHUB_REPO for the outbox dispatcher"
 else
-  check "github MCP configured" bash -c "cortex mcp list 2>/dev/null | grep -qi github"
+  check "GITHUB_REPO set" test -n "${GITHUB_REPO:-}"
 fi
 [ -z "${SLACK_WEBHOOK_URL:-}" ] && say "WARN  SLACK_WEBHOOK_URL not set (needed by Mission 05)"
 

@@ -11,7 +11,7 @@ Uses CoCo CLI to execute numbered mission prompts. Each mission generates and ru
 bash scripts/build_all.sh
 ```
 
-This runs missions 00→07 headlessly (see main README "Build everything" section for details). Each mission is idempotent and logs to `docs/runs/`.
+This runs missions 00→09 headlessly, including the 01b, 06b and 07b fix-ups (see the main README, section 6). Each mission logs to `docs/runs/`, and the script suspends the scheduled tasks at the end. Mission 10 (direct-deploy regeneration) is a maintainer step and is not part of the build.
 
 ## Method B — Direct Deploy (No LLM Required)
 
@@ -82,7 +82,9 @@ For accounts with External Access Integrations (EAI), see `deploy/optional/githu
 
 ### Verification
 
-Step 10 runs comprehensive checks: row counts, Dynamic Table refresh state, semantic view, Cortex Search, ML models, agent, task state, Streamlit app, procedure existence, OEE sanity range. Any FAIL result is printed clearly.
+Step 10 runs comprehensive checks: row counts, Dynamic Table refresh state, semantic view, Cortex Search, ML models, agent, task state, Streamlit app, procedure existence, OEE sanity range. Any `| FAIL` row is printed clearly and the summary line counts only result rows.
+
+This deploy was proven end to end on a clean paid account (all checks PASS, tasks suspended, app on the warehouse runtime) and on a trial account. [PARITY.md](PARITY.md) compares the deployed objects with the build account; the only difference on the trial account is Cortex Search, which trial accounts do not support.
 
 ### End-to-end golden-path check
 

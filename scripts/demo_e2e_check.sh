@@ -237,8 +237,8 @@ fi
 # --------------------------------------------------------------------------
 # Step 7: START_WORK_ORDER succeeds (parts now ready)
 # --------------------------------------------------------------------------
-echo "--- Step 7: Start work — succeeds ---"
-START_RESULT=$(run_sql "CALL AEGIS_OEE.ACTION.START_WORK_ORDER('${WO_ID}', 'TECH_KUMAR', 'Starting bearing replacement', FALSE)")
+echo "--- Step 7: Start work — succeeds (emergency override: the booked window is in the future) ---"
+START_RESULT=$(run_sql "CALL AEGIS_OEE.ACTION.START_WORK_ORDER('${WO_ID}', 'TECH_KUMAR', 'Starting bearing replacement', FALSE, 'E2E check: start outside the booked window')")
 if echo "$START_RESULT" | grep -q '"status":"OK"'; then
   WO_STATE=$(run_sql "SELECT STATE FROM AEGIS_OEE.ACTION.WORK_ORDER WHERE WO_ID = '${WO_ID}'" | grep -o 'IN_PROGRESS' || true)
   if [ "$WO_STATE" = "IN_PROGRESS" ]; then

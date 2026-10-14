@@ -1426,3 +1426,22 @@ All 33 guardrail tests PASS (7 M08_, 9 M07_, 9 M07B_, 8 original).
 | `internal/snapshot_export.py` | NEW (158 lines) |
 | `internal/snapshot_restore.sh` | NEW (179 lines) |
 | `internal/cleanup.sh` | NEW (54 lines) |
+
+---
+
+## 2026-10-14 - Governance hardening, agent fix, final sync
+
+Applied to both the build account and the judging account (AQAMQEL-FN54537); procedure, function and column definitions compared equal (24 procedures, 1 function, 135 columns); `deploy/sql/10_verify.sql` 53 PASS / 0 FAIL on both.
+
+| Change | Where |
+|---|---|
+| Gap-robust `ML.DETECT_ANOMALIES` (scores only live assets, 24 h context) | `deploy/sql/05`, `sql/05` |
+| 24 h re-alert cooldown after a work order closes; `PREDICTED_FAILURE_TS` on alerts | `SCORE_ALERTS` in `deploy/sql/08`, `sql/06` |
+| Estimated repair time set at approval (`CREATE_WORK_ORDER(..., est_duration_min)`, `WORK_ORDER.EST_DURATION_MIN`), used by `PROPOSE_SCHEDULE` / `SCHEDULE_WORK_ORDER` | `deploy/sql/08`, `deploy/sql/11`, `sql/10`, `sql/12` |
+| Shift-plan window gate on `START_WORK_ORDER` with audited emergency override (reason of 10+ characters) | `deploy/sql/08`, `sql/10` |
+| Agent fix: procedure tools use `identifier:` and the semantic view / search service live in PUBLIC | `deploy/sql/07`, `cortex_project/AEGIS_RCA_AGENT.agent.yaml` |
+| App: 9 pages incl. Audit Trail, info hovers on every KPI and section, busy overlay, persistent tabs, custom time range on the Digital Twin, formatted parts-used history, manual procurement forms | `app/` |
+| Dispatcher: claim-before-send, close-before-comment, clearer GitHub error output | `scripts/outbox_dispatcher.py` |
+| Demo video re-encoded (H.264 CRF 21, 34 MB) to stay under GitHub's 100 MB file limit | `video/AegisOEE_demo.mp4` |
+
+Judging account state after the sync: 0 alerts, 0 work orders, 0 requisitions, empty audit log, 4 tasks SUSPENDED, reserved parts P002=2 and P005=1 (baseline).

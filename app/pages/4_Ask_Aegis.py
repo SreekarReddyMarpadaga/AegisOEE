@@ -1,6 +1,6 @@
 import streamlit as st
 import json
-from utils import apply_theme, render_header, render_sidebar, get_session, info_tooltip
+from utils import refresh_page, flash, apply_theme, render_header, render_sidebar, get_session, info_tooltip
 
 apply_theme()
 render_sidebar()
@@ -145,11 +145,12 @@ if send and prompt and prompt.strip():
             "trace": trace_text,
         })
 
-    st.rerun()
+    refresh_page()
 
 # Clear chat
 if st.session_state.aegis_messages:
     if st.button("Clear Chat"):
         st.session_state.aegis_messages = []
         st.session_state.aegis_input_counter += 1
-        st.rerun()
+        flash("Chat cleared.")
+        refresh_page()

@@ -2,7 +2,10 @@ import streamlit as st
 import pandas as pd
 import altair as alt
 from datetime import date, timedelta
-from utils import apply_theme, render_header, render_kpi_card, render_sidebar, run_query, info_tooltip
+from utils import (
+    apply_theme, render_header, render_kpi_card, render_sidebar, run_query, info_tooltip,
+    OEE_HELP, AVAILABILITY_HELP, PERFORMANCE_HELP, QUALITY_HELP,
+)
 
 apply_theme()
 render_sidebar()
@@ -62,13 +65,13 @@ if not prior_df.empty and prior_df["AVG_OEE"].iloc[0] is not None:
 st.markdown(f"#### KPI Summary {info_tooltip('Average OEE and its components (Availability, Performance, Quality) for the selected period. Delta shows change vs the same-length prior period. OEE = A x P x Q. Source: SEMANTIC.DT_SHIFT_OEE')}", unsafe_allow_html=True)
 k1, k2, k3, k4 = st.columns(4)
 with k1:
-    render_kpi_card("Overall OEE", curr_oee, delta=delta_oee, fmt="pct")
+    render_kpi_card("Overall OEE", curr_oee, delta=delta_oee, fmt="pct", help=OEE_HELP)
 with k2:
-    render_kpi_card("Availability", curr_a, delta=delta_a, fmt="pct")
+    render_kpi_card("Availability", curr_a, delta=delta_a, fmt="pct", help=AVAILABILITY_HELP)
 with k3:
-    render_kpi_card("Performance", curr_p, delta=delta_p, fmt="pct")
+    render_kpi_card("Performance", curr_p, delta=delta_p, fmt="pct", help=PERFORMANCE_HELP)
 with k4:
-    render_kpi_card("Quality", curr_q, delta=delta_q, fmt="pct")
+    render_kpi_card("Quality", curr_q, delta=delta_q, fmt="pct", help=QUALITY_HELP)
 
 st.divider()
 

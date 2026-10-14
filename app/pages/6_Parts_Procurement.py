@@ -1,19 +1,20 @@
 import streamlit as st
 import pandas as pd
 import json
-from utils import (
+from utils import (refresh_page, flash, 
     apply_theme, render_header, render_sidebar, render_kpi_card, run_query,
-    get_session, write_audit, info_tooltip,
+    get_session, write_audit, info_tooltip, tab_switch, remember_open, is_open,
 )
 
 apply_theme()
 render_sidebar()
 render_header("Parts Procurement", "Requisitions, inventory, and supplier tracking")
 
-tab1, tab2, tab3 = st.tabs(["Requisitions", "Inventory", "Suppliers"])
+TAB_NAMES = ["Requisitions", "Inventory", "Suppliers"]
+active_tab = tab_switch(TAB_NAMES, "parts_tab")
 
 # ---- TAB 1: Requisitions ----
-with tab1:
+if active_tab == TAB_NAMES[0]:
     st.markdown(f"### Purchase Requisitions {info_tooltip('All requisitions with status, supplier, quote, lead time, linked work order, and order-by date from WO_SCHEDULE. Source: ACTION.PURCHASE_REQUISITION, ACTION.WO_SCHEDULE, CORE.PARTS_INVENTORY.')}", unsafe_allow_html=True)
 
     # Filters
@@ -67,11 +68,11 @@ with tab1:
 
         k1, k2, k3 = st.columns(3)
         with k1:
-            render_kpi_card("Open Requisitions", open_reqs, fmt="int")
+            render_kpi_card("Open Requisitions", open_reqs, fmt="int", help="Requisitions in PENDING_QUOTE, QUOTED or ORDERED status for the current filters.")
         with k2:
-            render_kpi_card("Pending Value", pending_value, fmt="dollar")
+            render_kpi_card("Pending Value", pending_value, fmt="dollar", help="Estimated total cost of requisitions still PENDING_QUOTE or QUOTED (not yet ordered).")
         with k3:
-            render_kpi_card("Max Lead Time", max_lead, fmt="int")
+            render_kpi_card("Max Lead Time", max_lead, fmt="int", help="Longest supplier lead time, in days, among the listed requisitions.")
 
         st.divider()
 
@@ -124,61 +125,118 @@ with tab1:
                 }
                 options = next_map.get(status, [])
                 if options:
-                    with st.expander(f"Update status for {pr['REQ_ID']}", expanded=False):
-                        ac1, ac2 = st.columns(2)
-                        with ac1:
-                            new_status = st.selectbox("New status", options, key=f"ns_{pr['REQ_ID']}")
-                        with ac2:
-                            actor = st.text_input("Your name", key=f"act_{pr['REQ_ID']}", placeholder="e.g. STORES_KUMAR")
-                        note = st.text_input("Note (optional)", key=f"note_{pr['REQ_ID']}")
-                        confirm = st.checkbox("I confirm this status change", key=f"conf_{pr['REQ_ID']}")
-                        bc1, bc2 = st.columns(2)
-                        with bc1:
-                            if st.button("Preview (dry run)", key=f"dry_{pr['REQ_ID']}"):
-                                if not actor.strip():
+                    with st.expander(f"Update status for {pr['REQ_ID']}", expanded=is_open(f"upd_{pr['REQ_ID']}")):
+                        with st.form(f"form_upd_{pr['REQ_ID']}"):
+                            ac1, ac2 = st.columns(2)
+                            with ac1:
+                                new_status = st.selectbox("New status", options, key=f"ns_{pr['REQ_ID']}")
+                            with ac2:
+                                actor = st.text_input("Your name", key=f"act_{pr['REQ_ID']}", placeholder="e.g. STORES_KUMAR")
+                            note = st.text_input("Note (optional)", key=f"note_{pr['REQ_ID']}")
+                            confirm = st.checkbox("I confirm this status change", key=f"conf_{pr['REQ_ID']}")
+                            bc1, bc2 = st.columns(2)
+                            with bc1:
+                                if st.form_submit_button("Preview (dry run)", on_click=remember_open, args=(f"upd_{pr['REQ_ID']}",)):
+                                    if not actor.strip():
+                                        st.warning("Enter your name.")
+                                    else:
+                                        try:
+                                            session = get_session()
+                                            safe_actor = actor.strip().replace("'", "''")
+                                            safe_note = note.strip().replace("'", "''")
+                                            result = session.sql(
+                                                f"CALL AEGIS_OEE.ACTION.UPDATE_REQUISITION_STATUS('{pr['REQ_ID']}', '{new_status}', '{safe_actor}', '{safe_note}', TRUE)"
+                                            ).collect()
+                                            if result:
+                                                st.json(result[0][0])
+                                        except Exception as e:
+                                            st.error(f"Error: {e}")
+                            with bc2:
+                                if st.form_submit_button("Confirm", type="primary"):
+                                    if not actor.strip():
+                                        st.warning("Enter your name.")
+                                    elif not confirm:
+                                        st.warning("Check the confirmation box.")
+                                    else:
+                                        try:
+                                            session = get_session()
+                                            safe_actor = actor.strip().replace("'", "''")
+                                            safe_note = note.strip().replace("'", "''")
+                                            result = session.sql(
+                                                f"CALL AEGIS_OEE.ACTION.UPDATE_REQUISITION_STATUS('{pr['REQ_ID']}', '{new_status}', '{safe_actor}', '{safe_note}', FALSE)"
+                                            ).collect()
+                                            should_rerun = False
+                                            if result:
+                                                try:
+                                                    parsed = json.loads(result[0][0]) if isinstance(result[0][0], str) else result[0][0]
+                                                    if parsed.get("status") == "OK":
+                                                        flash(f"Requisition {pr['REQ_ID']} updated to {new_status}.")
+                                                        should_rerun = True
+                                                    else:
+                                                        st.warning(f"Result: {parsed.get('reason', parsed.get('status'))}")
+                                                except Exception:
+                                                    st.write(result)
+                                        except Exception as e:
+                                            st.error(f"Error: {e}")
+                                        else:
+                                            if should_rerun:
+                                                refresh_page()
+
+                # Manual acquisition: skips the supplier flow (local purchase, transfer, emergency vendor)
+                with st.expander(f"Acquire manually (outside supplier flow) for {pr['REQ_ID']}", expanded=is_open(f"man_{pr['REQ_ID']}")):
+                    st.caption("Use when the parts are sourced directly: this marks the requisition as RECEIVED, adds the stock and reserves it for the linked work order.")
+                    with st.form(f"form_man_{pr['REQ_ID']}"):
+                        mc1, mc2 = st.columns(2)
+                        with mc1:
+                            m_source = st.selectbox(
+                                "Source", ["LOCAL_PURCHASE", "INTER_PLANT_TRANSFER", "EMERGENCY_VENDOR", "OTHER"],
+                                key=f"msrc_{pr['REQ_ID']}",
+                            )
+                        with mc2:
+                            m_actor = st.text_input("Your name", key=f"mact_{pr['REQ_ID']}", placeholder="e.g. STORES_KUMAR")
+                        m_note = st.text_input("Reference / note (PO no., transfer no., vendor)", key=f"mnote_{pr['REQ_ID']}")
+                        m_confirm = st.checkbox("I confirm the parts are physically in stock", key=f"mconf_{pr['REQ_ID']}")
+                        mb1, mb2 = st.columns(2)
+                        with mb1:
+                            if st.form_submit_button("Preview (dry run)", on_click=remember_open, args=(f"man_{pr['REQ_ID']}",)):
+                                if not m_actor.strip():
                                     st.warning("Enter your name.")
                                 else:
                                     try:
                                         session = get_session()
-                                        safe_actor = actor.strip().replace("'", "''")
-                                        safe_note = note.strip().replace("'", "''")
                                         result = session.sql(
-                                            f"CALL AEGIS_OEE.ACTION.UPDATE_REQUISITION_STATUS('{pr['REQ_ID']}', '{new_status}', '{safe_actor}', '{safe_note}', TRUE)"
+                                            f"CALL AEGIS_OEE.ACTION.ACQUIRE_REQUISITION_MANUAL('{pr['REQ_ID']}', '{m_source}', "
+                                            f"'{m_actor.strip().replace(chr(39), chr(39) * 2)}', '{m_note.strip().replace(chr(39), chr(39) * 2)}', TRUE)"
                                         ).collect()
                                         if result:
                                             st.json(result[0][0])
                                     except Exception as e:
                                         st.error(f"Error: {e}")
-                        with bc2:
-                            if st.button("Confirm", key=f"exec_{pr['REQ_ID']}", type="primary"):
-                                if not actor.strip():
+                        with mb2:
+                            if st.form_submit_button("Acquire & receive", type="primary"):
+                                if not m_actor.strip():
                                     st.warning("Enter your name.")
-                                elif not confirm:
+                                elif not m_confirm:
                                     st.warning("Check the confirmation box.")
                                 else:
                                     try:
                                         session = get_session()
-                                        safe_actor = actor.strip().replace("'", "''")
-                                        safe_note = note.strip().replace("'", "''")
                                         result = session.sql(
-                                            f"CALL AEGIS_OEE.ACTION.UPDATE_REQUISITION_STATUS('{pr['REQ_ID']}', '{new_status}', '{safe_actor}', '{safe_note}', FALSE)"
+                                            f"CALL AEGIS_OEE.ACTION.ACQUIRE_REQUISITION_MANUAL('{pr['REQ_ID']}', '{m_source}', "
+                                            f"'{m_actor.strip().replace(chr(39), chr(39) * 2)}', '{m_note.strip().replace(chr(39), chr(39) * 2)}', FALSE)"
                                         ).collect()
-                                        if result:
-                                            try:
-                                                parsed = json.loads(result[0][0]) if isinstance(result[0][0], str) else result[0][0]
-                                                if parsed.get("status") == "OK":
-                                                    st.success(f"Requisition {pr['REQ_ID']} updated to {new_status}.")
-                                                else:
-                                                    st.warning(f"Result: {parsed.get('reason', parsed.get('status'))}")
-                                            except Exception:
-                                                st.write(result)
+                                        parsed = json.loads(result[0][0]) if result and isinstance(result[0][0], str) else (result[0][0] if result else {})
+                                        if parsed.get("status") != "OK":
+                                            st.warning(f"Result: {parsed.get('reason', parsed.get('status'))}")
                                     except Exception as e:
                                         st.error(f"Error: {e}")
                                     else:
-                                        st.rerun()
+                                        if parsed.get("status") == "OK":
+                                            flash(f"Requisition {pr['REQ_ID']} received manually ({m_source}); stock added and reserved for the work order.")
+                                            refresh_page()
 
 # ---- TAB 2: Inventory ----
-with tab2:
+if active_tab == TAB_NAMES[1]:
     st.markdown(f"### Parts Inventory {info_tooltip('Current stock levels, reserved quantities, reorder status, and shortage analysis against open work orders. Source: CORE.PARTS_INVENTORY, CORE.FAILURE_MODE_PARTS, ACTION.WORK_ORDER.')}", unsafe_allow_html=True)
 
     inv_df = run_query("""
@@ -201,11 +259,11 @@ with tab2:
 
         k1, k2, k3 = st.columns(3)
         with k1:
-            render_kpi_card("Below Reorder", below, fmt="int")
+            render_kpi_card("Below Reorder", below, fmt="int", help="Parts whose on-hand quantity is at or below the reorder point.")
         with k2:
-            render_kpi_card("Inventory Value", total_value, fmt="dollar")
+            render_kpi_card("Inventory Value", total_value, fmt="dollar", help="On-hand quantity x unit cost across all parts.")
         with k3:
-            render_kpi_card("Total Reserved", total_reserved, fmt="int")
+            render_kpi_card("Total Reserved", total_reserved, fmt="int", help="Units held for approved work orders. Reserved stock is not available for new work orders.")
 
         st.divider()
 
@@ -228,7 +286,7 @@ with tab2:
         """, ttl=30)
 
         if not shortage_df.empty:
-            st.markdown("#### Shortages vs Open Work Orders")
+            st.markdown(f"#### Shortages vs Open Work Orders {info_tooltip('Parts required by open work orders that exceed available stock (on hand minus reserved). These need a requisition or a manual stock addition.')}", unsafe_allow_html=True)
             for _, s in shortage_df.iterrows():
                 st.markdown(
                     f'<div class="shortage-warning">'
@@ -241,7 +299,7 @@ with tab2:
                 )
             st.divider()
 
-        st.markdown("#### Full Inventory")
+        st.markdown(f"#### Full Inventory {info_tooltip('Every part with on-hand, reserved and available quantity, reorder point, unit cost and supplier. Source: CORE.PARTS_INVENTORY.')}", unsafe_allow_html=True)
         display_df = inv_df[["PART_ID", "PART_NAME", "CATEGORY", "ON_HAND_QTY", "RESERVED_QTY",
                              "AVAILABLE", "REORDER_POINT", "BELOW_REORDER", "UNIT_COST",
                              "SUPPLIER_NAME", "LEAD_TIME_DAYS", "BIN_LOCATION"]].copy()
@@ -249,8 +307,75 @@ with tab2:
         display_df["BELOW_REORDER"] = display_df["BELOW_REORDER"].map({True: "YES", False: ""})
         st.dataframe(display_df.reset_index(drop=True), use_container_width=True)
 
+        # Manual stock receipt without a requisition
+        with st.expander("Add stock manually (no requisition)", expanded=is_open("stock_form")):
+            st.caption("For parts obtained outside the supplier flow. If an open requisition already covers the shortage, use the Requisitions tab instead to avoid double-counting.")
+            open_wos = run_query("""
+                SELECT WO_ID FROM AEGIS_OEE.ACTION.WORK_ORDER
+                WHERE STATE NOT IN ('CLOSED', 'REJECTED', 'CANCELLED') ORDER BY APPROVED_TS DESC
+            """, ttl=30)
+            wo_options = ["(none)"] + (open_wos["WO_ID"].tolist() if not open_wos.empty else [])
+            with st.form("form_stock"):
+                sc1, sc2, sc3 = st.columns(3)
+                with sc1:
+                    s_part = st.selectbox("Part", inv_df["PART_ID"].tolist(), key="stk_part")
+                with sc2:
+                    s_qty = st.number_input("Quantity", min_value=1, value=1, step=1, key="stk_qty")
+                with sc3:
+                    s_source = st.selectbox(
+                        "Source", ["LOCAL_PURCHASE", "INTER_PLANT_TRANSFER", "EMERGENCY_VENDOR", "RETURNED_STOCK", "OTHER"],
+                        key="stk_source",
+                    )
+                sd1, sd2 = st.columns(2)
+                with sd1:
+                    s_actor = st.text_input("Your name", key="stk_actor", placeholder="e.g. STORES_KUMAR")
+                with sd2:
+                    s_wo = st.selectbox("Reserve for work order (optional)", wo_options, key="stk_wo")
+                s_note = st.text_input("Reference / note (PO no., transfer no., vendor)", key="stk_note")
+                s_confirm = st.checkbox("I confirm the parts are physically in stock", key="stk_confirm")
+
+                def _stock_call(dry_run):
+                    q = lambda v: v.strip().replace("'", "''")
+                    wo_arg = "NULL" if s_wo == "(none)" else f"'{q(s_wo)}'"
+                    return get_session().sql(
+                        f"CALL AEGIS_OEE.ACTION.ADD_STOCK_MANUAL('{q(s_part)}', {int(s_qty)}, '{s_source}', "
+                        f"'{q(s_actor)}', '{q(s_note)}', {wo_arg}, {'TRUE' if dry_run else 'FALSE'})"
+                    ).collect()
+
+                sb1, sb2 = st.columns(2)
+                with sb1:
+                    if st.form_submit_button("Preview (dry run)", on_click=remember_open, args=("stock_form",)):
+                        if not s_actor.strip():
+                            st.warning("Enter your name.")
+                        else:
+                            try:
+                                res = _stock_call(True)
+                                if res:
+                                    st.json(res[0][0])
+                            except Exception as e:
+                                st.error(f"Error: {e}")
+                with sb2:
+                    if st.form_submit_button("Add stock", type="primary"):
+                        if not s_actor.strip():
+                            st.warning("Enter your name.")
+                        elif not s_confirm:
+                            st.warning("Check the confirmation box.")
+                        else:
+                            parsed = {}
+                            try:
+                                res = _stock_call(False)
+                                parsed = json.loads(res[0][0]) if res and isinstance(res[0][0], str) else (res[0][0] if res else {})
+                                if parsed.get("status") != "OK":
+                                    st.warning(f"Result: {parsed.get('reason', parsed.get('status'))}")
+                            except Exception as e:
+                                st.error(f"Error: {e}")
+                            else:
+                                if parsed.get("status") == "OK":
+                                    flash(f"Added {int(s_qty)} x {s_part} to stock ({s_source}).")
+                                    refresh_page()
+
 # ---- TAB 3: Suppliers ----
-with tab3:
+if active_tab == TAB_NAMES[2]:
     st.markdown(f"### Supplier Overview {info_tooltip('Spend, open requisitions, and average lead time per supplier. Source: ACTION.PURCHASE_REQUISITION, CORE.PARTS_INVENTORY.')}", unsafe_allow_html=True)
 
     supplier_df = run_query("""

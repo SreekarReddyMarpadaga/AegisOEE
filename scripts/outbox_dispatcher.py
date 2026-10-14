@@ -7,10 +7,53 @@ import json, os, subprocess, sys, re, time
 
 CONN = os.environ.get("COCO_CONN", "aegis")
 GITHUB_REPO = os.environ.get("GITHUB_REPO", "")  # owner/repo that receives the issues
+_close_retry_after = {}  # wo_id -> epoch seconds before which a failed close is not retried
 
-def snow_sql(sql):
-    subprocess.run(["snow", "sql", "--connection", CONN, "-q", sql],
-                   capture_output=True, text=True)
+def snow_sql(sql, retries=3):
+    """Run a statement; returns True on success. Retries so a DNS blip after an
+    external send does not leave the row unmarked."""
+    for i in range(retries):
+        r = subprocess.run(["snow", "sql", "--connection", CONN, "-q", sql],
+                           capture_output=True, text=True)
+        if r.returncode == 0:
+            return True
+        time.sleep(2 * (i + 1))
+    print(f"  WARN: SQL failed after {retries} tries: {sql[:80]!r}")
+    return False
+
+def claim(outbox_id):
+    """Atomically flip PENDING -> SENDING; only the caller that wins may send."""
+    rows = query_json(f"UPDATE AEGIS_OEE.ACTION.WORK_ORDER_OUTBOX SET STATUS='SENDING' "
+                      f"WHERE OUTBOX_ID='{outbox_id}' AND STATUS='PENDING'")
+    try:
+        return int(list(rows[0].values())[0]) == 1
+    except Exception:
+        return False
+
+def mark_sent(outbox_id):
+    snow_sql(f"UPDATE AEGIS_OEE.ACTION.WORK_ORDER_OUTBOX SET STATUS='SENT', ATTEMPTS=ATTEMPTS+1, LAST_ERROR=NULL "
+             f"WHERE OUTBOX_ID='{outbox_id}'")
+
+def release(outbox_id, err):
+    err = err[:200].replace("'", "''")
+    snow_sql(f"UPDATE AEGIS_OEE.ACTION.WORK_ORDER_OUTBOX SET STATUS='PENDING', ATTEMPTS=ATTEMPTS+1, "
+             f"LAST_ERROR='{err}' WHERE OUTBOX_ID='{outbox_id}'")
+
+def find_existing_issue(github_pat, wo_id):
+    """Recover from a lost DB update: an issue for this WO may already exist."""
+    import requests
+    resp = requests.get(
+        f"https://api.github.com/repos/{GITHUB_REPO}/issues",
+        headers={"Authorization": f"token {github_pat}", "Accept": "application/vnd.github.v3+json"},
+        params={"state": "all", "labels": "maintenance", "per_page": 100},
+        timeout=30,
+    )
+    if resp.status_code != 200:
+        return ""
+    for issue in resp.json():
+        if "pull_request" not in issue and f"`{wo_id}`" in (issue.get("body") or ""):
+            return issue.get("html_url", "")
+    return ""
 
 def query_json(sql):
     r = subprocess.run(["snow", "sql", "--connection", CONN, "--format", "json", "-q", sql],
@@ -23,11 +66,11 @@ def query_json(sql):
         return []
 
 
-def dispatch_pending(github_pat, slack_url):
+def dispatch_pending(github_pat, slack_url, only=None):
     items = query_json("""
-        SELECT OB.OUTBOX_ID, OB.WO_ID, OB.TARGET, OB.ATTEMPTS,
+        SELECT OB.OUTBOX_ID, OB.WO_ID, OB.TARGET, OB.ATTEMPTS, OB.PAYLOAD,
                WO.TITLE, WO.DESCRIPTION, WO.ASSET_ID, WO.PRIORITY, WO.APPROVED_BY,
-               WO.ALERT_ID,
+               WO.ALERT_ID, WO.GITHUB_ISSUE_URL,
                AL.SEVERITY, AL.PREDICTED_MODE, AL.FAILURE_PROBABILITY,
                AL.CONFIDENCE, AL.OEE_IMPACT_EST
         FROM AEGIS_OEE.ACTION.WORK_ORDER_OUTBOX OB
@@ -36,6 +79,8 @@ def dispatch_pending(github_pat, slack_url):
         WHERE OB.STATUS = 'PENDING'
         ORDER BY OB.TARGET
     """)
+    if only:
+        items = [i for i in items if i["TARGET"] in only]
     if not items:
         return
 
@@ -57,9 +102,51 @@ def dispatch_pending(github_pat, slack_url):
         conf = item.get("CONFIDENCE") or 0
         oee_impact = item.get("OEE_IMPACT_EST") or 0
         alert_id = item.get("ALERT_ID") or ""
+        existing_url = item.get("GITHUB_ISSUE_URL") or ""
+        payload = item.get("PAYLOAD") or {}
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except Exception:
+                payload = {}
+
+        if target == "GITHUB" and not github_pat:
+            print(f"  SKIP: {target} for {wo_id} (no credential)")
+            continue
+        if target == "SLACK" and not slack_url:
+            print(f"  SKIP: {target} for {wo_id} (no credential)")
+            continue
+        if target == "SLACK" and not existing_url and os.environ.get("GITHUB_PAT"):
+            # Hold the Slack message until the issue exists so it can carry the link (gives up after 3 GitHub attempts).
+            waiting = query_json(
+                f"SELECT COUNT(*) AS N FROM AEGIS_OEE.ACTION.WORK_ORDER_OUTBOX "
+                f"WHERE WO_ID = '{wo_id}' AND TARGET = 'GITHUB' AND STATUS IN ('PENDING', 'SENDING') "
+                f"AND ATTEMPTS < 3 AND COALESCE(PAYLOAD:action::STRING, '') != 'close'"
+            )
+            if waiting and int(list(waiting[0].values())[0]) > 0:
+                print(f"  WAIT: Slack for {wo_id} until the GitHub issue link exists")
+                continue
+        if not claim(outbox_id):
+            continue  # another dispatcher (or retry task) already took it
 
         try:
-            if target == "GITHUB" and github_pat:
+            if target == "GITHUB" and payload.get("action") == "close":
+                # Close requests never create an issue; close_github_issues() performs the close.
+                mark_sent(outbox_id)
+                print(f"  GITHUB CLOSE REQUEST deferred to closer: {wo_id}")
+
+            elif target == "GITHUB" and existing_url:
+                mark_sent(outbox_id)
+                print(f"  GITHUB SKIP (issue already linked): {wo_id} -> {existing_url}")
+
+            elif target == "GITHUB":
+                recovered = find_existing_issue(github_pat, wo_id)
+                if recovered:
+                    safe_url = recovered.replace("'", "''")
+                    snow_sql(f"UPDATE AEGIS_OEE.ACTION.WORK_ORDER SET GITHUB_ISSUE_URL='{safe_url}' WHERE WO_ID='{wo_id}' AND GITHUB_ISSUE_URL IS NULL")
+                    mark_sent(outbox_id)
+                    print(f"  GITHUB ADOPTED existing issue: {wo_id} -> {recovered}")
+                    continue
                 # Fetch parts data for the issue body
                 parts_rows = query_json(f"""
                     SELECT FMP.PART_ID, PI.PART_NAME, FMP.QTY_REQUIRED,
@@ -130,26 +217,29 @@ def dispatch_pending(github_pat, slack_url):
                 if resp.status_code in (200, 201):
                     issue_url = resp.json().get("html_url", "")
                     safe_url = issue_url.replace("'", "''")
-                    snow_sql(f"UPDATE AEGIS_OEE.ACTION.WORK_ORDER_OUTBOX SET STATUS='SENT', ATTEMPTS=ATTEMPTS+1 WHERE OUTBOX_ID='{outbox_id}'")
+                    mark_sent(outbox_id)
                     if issue_url:
                         snow_sql(f"UPDATE AEGIS_OEE.ACTION.WORK_ORDER SET GITHUB_ISSUE_URL='{safe_url}' WHERE WO_ID='{wo_id}' AND GITHUB_ISSUE_URL IS NULL")
                     audit_detail = json.dumps({"issue_url": issue_url}).replace("'", "''")
                     snow_sql(f"INSERT INTO AEGIS_OEE.ACTION.ACTION_AUDIT(AUDIT_ID,TS,ACTOR,ACTION,OBJECT_REF,DETAIL) SELECT 'AUD_GH_'||TO_VARCHAR(CURRENT_TIMESTAMP,'YYYYMMDD_HH24MISSFF3'),CURRENT_TIMESTAMP,'OUTBOX_DISPATCHER','GITHUB_SENT','{wo_id}',PARSE_JSON('{audit_detail}')")
                     print(f"  GITHUB SENT: {wo_id} -> {issue_url}")
                 else:
-                    err = resp.text[:200].replace("'", "''")
-                    snow_sql(f"UPDATE AEGIS_OEE.ACTION.WORK_ORDER_OUTBOX SET ATTEMPTS=ATTEMPTS+1, LAST_ERROR='{err}' WHERE OUTBOX_ID='{outbox_id}'")
-                    print(f"  GITHUB FAILED ({resp.status_code}): {wo_id}")
+                    release(outbox_id, resp.text)
+                    print(f"  GITHUB FAILED ({resp.status_code}): {wo_id} - {resp.json().get('message', resp.text[:120]) if resp.headers.get('content-type', '').startswith('application/json') else resp.text[:120]}")
+                    if resp.status_code == 404:
+                        print(f"    404 means GITHUB_REPO='{GITHUB_REPO}' does not exist or the token cannot access it (fine-grained tokens must be granted this repo with Issues: read/write).")
 
-            elif target == "SLACK" and slack_url:
+            elif target == "SLACK":
                 github_url_rows = query_json(f"SELECT GITHUB_ISSUE_URL FROM AEGIS_OEE.ACTION.WORK_ORDER WHERE WO_ID = '{wo_id}'")
                 gh_url = github_url_rows[0].get("GITHUB_ISSUE_URL", "") if github_url_rows else ""
                 gh_link = f"\n<{gh_url}|View GitHub Issue>" if gh_url else ""
+                slack_text = payload.get("text") or f"{severity} Work Order Approved: {title}"
+                header = "AegisOEE Work Order Closed" if "Closed" in slack_text else "AegisOEE Work Order Approved"
 
-                msg = {
-                    "text": f"{severity} Work Order Approved: {title}",
+                msg = payload if payload.get("blocks") else {
+                    "text": slack_text,
                     "blocks": [
-                        {"type": "header", "text": {"type": "plain_text", "text": ":rotating_light: AegisOEE Work Order Approved", "emoji": True}},
+                        {"type": "header", "text": {"type": "plain_text", "text": f":rotating_light: {header}", "emoji": True}},
                         {"type": "section", "fields": [
                             {"type": "mrkdwn", "text": f"*Work Order:*\n`{wo_id}`"},
                             {"type": "mrkdwn", "text": f"*Asset:*\n`{asset}`"},
@@ -162,18 +252,14 @@ def dispatch_pending(github_pat, slack_url):
                 }
                 resp = requests.post(slack_url, json=msg, timeout=30)
                 if resp.status_code == 200:
-                    snow_sql(f"UPDATE AEGIS_OEE.ACTION.WORK_ORDER_OUTBOX SET STATUS='SENT', ATTEMPTS=ATTEMPTS+1 WHERE OUTBOX_ID='{outbox_id}'")
+                    mark_sent(outbox_id)
                     snow_sql(f"INSERT INTO AEGIS_OEE.ACTION.ACTION_AUDIT(AUDIT_ID,TS,ACTOR,ACTION,OBJECT_REF,DETAIL) SELECT 'AUD_SL_'||TO_VARCHAR(CURRENT_TIMESTAMP,'YYYYMMDD_HH24MISSFF3'),CURRENT_TIMESTAMP,'OUTBOX_DISPATCHER','SLACK_SENT','{wo_id}',PARSE_JSON('{{\"status\":\"sent\"}}')")
                     print(f"  SLACK SENT: {wo_id}")
                 else:
-                    err = resp.text[:200].replace("'", "''")
-                    snow_sql(f"UPDATE AEGIS_OEE.ACTION.WORK_ORDER_OUTBOX SET ATTEMPTS=ATTEMPTS+1, LAST_ERROR='{err}' WHERE OUTBOX_ID='{outbox_id}'")
+                    release(outbox_id, resp.text)
                     print(f"  SLACK FAILED ({resp.status_code}): {wo_id}")
-            else:
-                print(f"  SKIP: {target} for {wo_id} (no credential)")
         except Exception as e:
-            err = str(e)[:200].replace("'", "''")
-            snow_sql(f"UPDATE AEGIS_OEE.ACTION.WORK_ORDER_OUTBOX SET ATTEMPTS=ATTEMPTS+1, LAST_ERROR='{err}' WHERE OUTBOX_ID='{outbox_id}'")
+            release(outbox_id, str(e))
             print(f"  ERROR: {target} {wo_id} -> {e}")
 
 
@@ -196,6 +282,9 @@ def close_github_issues(github_pat):
     """)
     if not wo_to_close:
         return
+    wo_to_close = [w for w in wo_to_close if _close_retry_after.get(w["WO_ID"], 0) <= time.time()]
+    if not wo_to_close:
+        return
 
     import requests
     print(f"[DISPATCHER] {len(wo_to_close)} GitHub issue(s) to close")
@@ -212,42 +301,33 @@ def close_github_issues(github_pat):
         issue_number = match.group(1)
 
         try:
-            # Close the issue
             api_url = f"https://api.github.com/repos/{GITHUB_REPO}/issues/{issue_number}"
+            headers = {"Authorization": f"token {github_pat}", "Accept": "application/vnd.github.v3+json"}
             close_comment = f"Work order `{wo_id}` has been **{state}**. Closing this issue."
             if state == "REJECTED":
                 close_comment += "\n\n> This work order was rejected and no maintenance action was taken."
 
-            # Add closing comment
-            requests.post(
-                f"{api_url}/comments",
-                headers={"Authorization": f"token {github_pat}", "Accept": "application/vnd.github.v3+json"},
-                json={"body": close_comment},
-                timeout=30,
-            )
-            # Close the issue
             resp = requests.patch(
-                api_url,
-                headers={"Authorization": f"token {github_pat}", "Accept": "application/vnd.github.v3+json"},
+                api_url, headers=headers,
                 json={"state": "closed", "state_reason": "completed" if state == "CLOSED" else "not_planned"},
                 timeout=30,
             )
             if resp.status_code == 200:
+                # Best effort: the issue is already closed, so a failed comment must not trigger a retry.
+                requests.post(f"{api_url}/comments", headers=headers, json={"body": close_comment}, timeout=30)
                 audit_detail = json.dumps({"issue_url": issue_url, "issue_number": issue_number, "wo_state": state}).replace("'", "''")
                 snow_sql(f"INSERT INTO AEGIS_OEE.ACTION.ACTION_AUDIT(AUDIT_ID,TS,ACTOR,ACTION,OBJECT_REF,DETAIL) SELECT 'AUD_GH_CLOSE_'||TO_VARCHAR(CURRENT_TIMESTAMP,'YYYYMMDD_HH24MISSFF3'),CURRENT_TIMESTAMP,'OUTBOX_DISPATCHER','GITHUB_ISSUE_CLOSED','{wo_id}',PARSE_JSON('{audit_detail}')")
-                # Also send Slack notification about closure
-                if slack_url := os.environ.get("SLACK_WEBHOOK_URL", ""):
-                    requests.post(slack_url, json={
-                        "text": f"GitHub Issue #{issue_number} closed — WO {wo_id} {state}",
-                        "blocks": [
-                            {"type": "section", "text": {"type": "mrkdwn", "text": f":white_check_mark: *Work Order {state}*\n`{wo_id}` — <{issue_url}|GitHub Issue #{issue_number}> closed."}},
-                            {"type": "context", "elements": [{"type": "mrkdwn", "text": "AegisOEE Governed Action Loop"}]},
-                        ]
-                    }, timeout=30)
+                # The Slack 'Work Order Closed' message is queued by CLOSE_WORK_ORDER; none is sent here.
                 print(f"  GITHUB CLOSED: {wo_id} issue #{issue_number} ({state})")
             else:
-                print(f"  GITHUB CLOSE FAILED ({resp.status_code}): {wo_id}")
+                wait = int(resp.headers.get("Retry-After", 300))
+                _close_retry_after[wo_id] = time.time() + max(wait, 60)
+                needed = resp.headers.get("X-Accepted-GitHub-Permissions", "")
+                print(f"  GITHUB CLOSE FAILED ({resp.status_code}): {wo_id} | {resp.text[:300]!r}"
+                      + (f" | token needs: {needed}" if needed else "")
+                      + f" | retry in {max(wait, 60)}s")
         except Exception as e:
+            _close_retry_after[wo_id] = time.time() + 300
             print(f"  ERROR closing issue: {wo_id} -> {e}")
 
 
@@ -389,9 +469,11 @@ def main():
     close_github_issues(github_pat)
     sync_github_status(github_pat)
     # Dispatch any Slack items queued by the sync above
-    dispatch_pending("", slack_url)
+    dispatch_pending("", slack_url, only=("SLACK",))
 
 if __name__ == "__main__":
+    # A crash mid-send leaves SENDING rows; requeue them once at startup (GitHub recovery search prevents duplicate issues).
+    snow_sql("UPDATE AEGIS_OEE.ACTION.WORK_ORDER_OUTBOX SET STATUS='PENDING' WHERE STATUS='SENDING'")
     interval = int(os.environ.get("DISPATCH_INTERVAL_S", "0"))  # 0 = run once
     while True:
         main()

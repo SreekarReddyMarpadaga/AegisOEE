@@ -110,19 +110,19 @@ tool_resources:
     search_service: AEGIS_OEE.SEMANTIC.MAINTENANCE_SEARCH
   get_asset_evidence:
     type: procedure
-    procedure: AEGIS_OEE.ACTION.GET_ASSET_EVIDENCE
+    identifier: AEGIS_OEE.ACTION.GET_ASSET_EVIDENCE
     execution_environment:
       type: warehouse
       warehouse: AEGIS_APP_WH
   propose_work_order:
     type: procedure
-    procedure: AEGIS_OEE.ACTION.PROPOSE_WORK_ORDER
+    identifier: AEGIS_OEE.ACTION.PROPOSE_WORK_ORDER
     execution_environment:
       type: warehouse
       warehouse: AEGIS_APP_WH
   propose_schedule:
     type: procedure
-    procedure: AEGIS_OEE.ACTION.PROPOSE_SCHEDULE
+    identifier: AEGIS_OEE.ACTION.PROPOSE_SCHEDULE
     execution_environment:
       type: warehouse
       warehouse: AEGIS_APP_WH

@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS ACTION.ALERT (
   EVIDENCE          VARIANT
 );
 
+ALTER TABLE ACTION.ALERT ADD COLUMN IF NOT EXISTS PREDICTED_FAILURE_TS TIMESTAMP_TZ;
+
 CREATE TABLE IF NOT EXISTS ACTION.WORK_ORDER (
   WO_ID             STRING    NOT NULL PRIMARY KEY,
   ALERT_ID          STRING,
@@ -95,6 +97,12 @@ BEGIN
       FROM AEGIS_OEE.FEATURES.DT_ASSET_HEALTH h
       JOIN AEGIS_OEE.CORE.ASSET a ON h.ASSET_ID = a.ASSET_ID
       WHERE h.PREDICTED_MODE IS NOT NULL AND h.FAILURE_PROBABILITY_24H > 0.05
+        AND NOT EXISTS (
+          SELECT 1 FROM AEGIS_OEE.ACTION.WORK_ORDER wo
+          JOIN AEGIS_OEE.ACTION.ALERT al2 ON wo.ALERT_ID = al2.ALERT_ID
+          WHERE wo.ASSET_ID = h.ASSET_ID AND al2.PREDICTED_MODE = h.PREDICTED_MODE
+            AND wo.STATE = 'CLOSED' AND wo.CLOSED_AT > DATEADD('hour', -24, CURRENT_TIMESTAMP())
+        )
     ),
     anomaly_stats AS (
       SELECT ASSET_ID,
@@ -135,6 +143,7 @@ BEGIN
       f.ASSET_ID, f.LAST_READING_TS AS onset_ts,
       CASE WHEN f.priority_score >= 0.5 THEN 'P1' WHEN f.priority_score >= 0.25 THEN 'P2' ELSE 'P3' END AS severity,
       f.confidence, f.FAILURE_PROBABILITY_24H AS failure_probability, f.PREDICTED_MODE AS predicted_mode, f.oee_impact_est,
+      DATEADD('hour', CASE WHEN f.FAILURE_PROBABILITY_24H >= 0.8 THEN 24 WHEN f.FAILURE_PROBABILITY_24H >= 0.5 THEN 72 ELSE 168 END, CURRENT_TIMESTAMP()) AS predicted_failure_ts,
       CASE WHEN f.confidence < 0.5 THEN 'NEW' ELSE 'TRIAGED' END AS computed_status,
       OBJECT_CONSTRUCT(
         'asset_id', f.ASSET_ID, 'model_version', 'AD_v1_ZSCORE_v1',
@@ -148,9 +157,10 @@ BEGIN
   ON tgt.ALERT_ID = src.alert_id AND tgt.STATUS NOT IN ('CLOSED', 'SUPPRESSED')
   WHEN MATCHED THEN UPDATE SET
     SEVERITY = src.severity, CONFIDENCE = src.confidence, FAILURE_PROBABILITY = src.failure_probability,
-    OEE_IMPACT_EST = src.oee_impact_est, EVIDENCE = src.evidence
-  WHEN NOT MATCHED THEN INSERT (ALERT_ID, ASSET_ID, ONSET_TS, SEVERITY, CONFIDENCE, FAILURE_PROBABILITY, PREDICTED_MODE, OEE_IMPACT_EST, STATUS, EVIDENCE)
-  VALUES (src.alert_id, src.ASSET_ID, src.onset_ts, src.severity, src.confidence, src.failure_probability, src.predicted_mode, src.oee_impact_est, src.computed_status, src.evidence);
+    OEE_IMPACT_EST = src.oee_impact_est, EVIDENCE = src.evidence,
+    PREDICTED_FAILURE_TS = LEAST(COALESCE(tgt.PREDICTED_FAILURE_TS, src.predicted_failure_ts), src.predicted_failure_ts)
+  WHEN NOT MATCHED THEN INSERT (ALERT_ID, ASSET_ID, ONSET_TS, SEVERITY, CONFIDENCE, FAILURE_PROBABILITY, PREDICTED_MODE, OEE_IMPACT_EST, STATUS, EVIDENCE, PREDICTED_FAILURE_TS)
+  VALUES (src.alert_id, src.ASSET_ID, src.onset_ts, src.severity, src.confidence, src.failure_probability, src.predicted_mode, src.oee_impact_est, src.computed_status, src.evidence, src.predicted_failure_ts);
 
   RETURN 'SCORE_ALERTS complete: ' || (SELECT COUNT(*) FROM AEGIS_OEE.ACTION.ALERT WHERE STATUS IN ('NEW','TRIAGED'))::STRING || ' open alerts';
 END;

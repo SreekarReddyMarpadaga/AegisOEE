@@ -41,12 +41,12 @@ flowchart LR
     ML --> AL[ACTION.ALERT<br/>5-min scoring task,<br/>dedup + confidence gate]
     DT --> SEM[Semantic view + Cortex Search<br/>+ Cortex Agent RCA]
     AL --> APP
-    SEM --> APP[Streamlit Command Center<br/>8 pages]
+    SEM --> APP[Streamlit Command Center<br/>9 pages]
     APP --> WF[Governed workflow:<br/>approve -> procure -> schedule -><br/>start -> complete -> close + audit]
     WF -. outbox .-> EXT[GitHub Issue + Slack<br/>optional dispatcher]
 ```
 
-### The app (8 pages)
+### The app (9 pages)
 
 | Page | Who uses it | What it does |
 |---|---|---|
@@ -54,10 +54,11 @@ flowchart LR
 | Alert Triage | reliability engineer | ranked alerts with evidence; acknowledge / investigate / suppress |
 | Asset Digital Twin | engineer | sensor trends, anomaly markers, forecast bands, health per asset |
 | Ask Aegis | anyone | chat with the RCA agent (root cause, evidence, recommended action) |
-| Work Order Review | planner / technician / supervisor | approve a draft, then **start -> complete -> close** the maintenance job with a lifecycle stepper; past orders; audit trail |
+| Work Order Review | planner / technician / supervisor | approve a draft, then **start -> complete -> close** the maintenance job with a lifecycle stepper; past orders |
 | Parts Procurement | stores / purchasing | requisitions (quote -> order -> receive), inventory, suppliers |
 | Asset Map | manager | ISA-95 site / line / asset health tiles |
 | Shift Plan | production planner | 14-day production and maintenance-window Gantt, work-order schedule, expedite flags, rebook |
+| Audit Trail | supervisor / auditor | append-only log of every action (including dry runs and rejections), filter by action, actor or object |
 
 ### Highlights
 
@@ -66,6 +67,10 @@ flowchart LR
 - **Semantic view + Cortex Search + Cortex Agent** for governed natural-language analytics and RCA with a fixed answer structure.
 - **Human-in-the-loop governance**: the agent only *proposes*; every state change needs a named human, has a dry-run, valid-transition checks, and writes an audit row (including rejections).
 - **Parts-aware scheduling**: maintenance is scheduled into non-production windows; if the part's lead time arrives after the predicted failure the system says **EXPEDITE** and gives an order-by date.
+- **Planner-controlled repair time**: the approver sets the estimated repair time (default: historical average labour time for the failure mode and asset type); scheduling books a window with enough free capacity.
+- **Shift-plan gate on Start Work**: work can only start inside the booked maintenance window (15 min early allowed). In an emergency the supervisor can tick an override and give a reason (10+ characters); overrides are audited as `START_WO_SCHEDULE_OVERRIDE`.
+- **No alert churn**: after a work order closes, the same asset and failure mode is not re-alerted for 24 h.
+- **Explained numbers**: every KPI, score and section in the app has an info hover (failure probability, health score, risk level, confidence, severity, OEE impact, predicted failure time).
 - **Reference build results** (seeded data): ~718K telemetry rows, 10 assets, plant OEE about 75 percent, ML recall 0.90 with a 162 h lead time on the golden-path failure, 62 workflow guardrail tests and 25 validation checks passing.
 
 ---
@@ -288,11 +293,11 @@ Run: cortex agents run AEGIS_OEE.ACTION.AEGIS_RCA_AGENT "Why is CNC_01_SPINDLE a
 **App walk-through (the human-approved loop):**
 
 1. **Alert Triage** -> expand the alert -> *Show evidence* -> **Acknowledge**.
-2. **Work Order Review -> Pending Drafts** -> check *Parts Readiness* (the spindle bearing kit is intentionally short) -> enter an approver name -> tick the confirmation -> **Approve**.
+2. **Work Order Review -> Pending Drafts** -> check *Parts Readiness* (the spindle bearing kit is intentionally short) -> enter an approver name and the **estimated repair time** -> tick the confirmation -> **Approve**.
 3. **Shift Plan -> WO Schedule** -> the order shows **EXPEDITE** with an order-by date.
 4. **Parts Procurement -> Requisitions** -> *Update status* QUOTED -> ORDERED -> RECEIVED (name + confirm + **Confirm**). Receiving reserves the stock for the work order.
-5. **Work Order Review -> Active Work Orders** -> **Start Work** (blocked until parts are received) -> **Complete Work** (finding, action taken, labor hours, outcome) -> **Close Work Order** (a different person than the technician, with a verification note).
-6. **Audit History** shows every attempt, including rejections.
+5. **Work Order Review -> Active Work Orders** -> **Start Work** (blocked until parts are received and the booked window is open; for the demo tick *Emergency override* and give a reason of 10+ characters) -> **Complete Work** (finding, action taken, labor hours, outcome) -> **Close Work Order** (a different person than the technician, with a verification note).
+6. **Audit Trail** shows every attempt, including rejections and the override.
 
 Stop spending credits and restore a pristine state afterwards:
 
@@ -365,7 +370,7 @@ Keep `TASK_OUTBOX_RETRY` suspended while the dispatcher runs, otherwise Slack me
 | `.cortex/hooks/` | guardrail hook that blocks destructive SQL outside `AEGIS_OEE` |
 | `sql/`, `semantic/`, `cortex_project/` | SQL objects, semantic model, agent specification |
 | `data_gen/` | seeded data generator (`backfill.py`), CMMS plan generator (`cmms_plan.py`), live simulator (`simulator.py`) |
-| `app/` | Streamlit app (8 pages) |
+| `app/` | Streamlit app (9 pages) |
 | `scripts/` | `build_all.sh`, `preflight_probes.sh`, `inject_anomaly.sh`, `demo_reset.sh`, `demo_e2e_check.sh`, `outbox_dispatcher.py` |
 | `tests/` | validation report, ML recall check, agent evaluation |
 | `docs/` | plan, ADRs, risk register, run records |

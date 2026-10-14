@@ -349,20 +349,20 @@ CREATE OR REPLACE AGENT AEGIS_OEE.ACTION.AEGIS_RCA_AGENT
   ],
   "tool_resources": {
     "manufacturing_analytics": {
-      "semantic_view": "AEGIS_OEE.SEMANTIC.MANUFACTURING_OPERATIONS",
+      "semantic_view": "AEGIS_OEE.PUBLIC.MANUFACTURING_OPERATIONS",
       "execution_environment": {"type": "warehouse", "warehouse": "AEGIS_APP_WH"}
     },
     "maintenance_docs": {
-      "search_service": "AEGIS_OEE.SEMANTIC.MAINTENANCE_SEARCH"
+      "search_service": "AEGIS_OEE.PUBLIC.MAINTENANCE_SEARCH"
     },
     "get_asset_evidence": {
       "type": "procedure",
-      "procedure": "AEGIS_OEE.ACTION.GET_ASSET_EVIDENCE",
+      "identifier": "AEGIS_OEE.ACTION.GET_ASSET_EVIDENCE",
       "execution_environment": {"type": "warehouse", "warehouse": "AEGIS_APP_WH"}
     },
     "propose_work_order": {
       "type": "procedure",
-      "procedure": "AEGIS_OEE.ACTION.PROPOSE_WORK_ORDER",
+      "identifier": "AEGIS_OEE.ACTION.PROPOSE_WORK_ORDER",
       "execution_environment": {"type": "warehouse", "warehouse": "AEGIS_APP_WH"}
     }
   }

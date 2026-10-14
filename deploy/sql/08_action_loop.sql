@@ -29,6 +29,12 @@ BEGIN
       FROM AEGIS_OEE.FEATURES.DT_ASSET_HEALTH h
       JOIN AEGIS_OEE.CORE.ASSET a ON h.ASSET_ID = a.ASSET_ID
       WHERE h.PREDICTED_MODE IS NOT NULL AND h.FAILURE_PROBABILITY_24H > 0.05
+        AND NOT EXISTS (
+          SELECT 1 FROM AEGIS_OEE.ACTION.WORK_ORDER wo
+          JOIN AEGIS_OEE.ACTION.ALERT al2 ON wo.ALERT_ID = al2.ALERT_ID
+          WHERE wo.ASSET_ID = h.ASSET_ID AND al2.PREDICTED_MODE = h.PREDICTED_MODE
+            AND wo.STATE = 'CLOSED' AND wo.CLOSED_AT > DATEADD('hour', -24, CURRENT_TIMESTAMP())
+        )
     ),
     anomaly_stats AS (
       SELECT ASSET_ID,
@@ -69,6 +75,7 @@ BEGIN
       f.ASSET_ID, f.LAST_READING_TS AS onset_ts,
       CASE WHEN f.priority_score >= 0.5 THEN 'P1' WHEN f.priority_score >= 0.25 THEN 'P2' ELSE 'P3' END AS severity,
       f.confidence, f.FAILURE_PROBABILITY_24H AS failure_probability, f.PREDICTED_MODE AS predicted_mode, f.oee_impact_est,
+      DATEADD('hour', CASE WHEN f.FAILURE_PROBABILITY_24H >= 0.8 THEN 24 WHEN f.FAILURE_PROBABILITY_24H >= 0.5 THEN 72 ELSE 168 END, CURRENT_TIMESTAMP()) AS predicted_failure_ts,
       CASE WHEN f.confidence < 0.5 THEN 'NEW' ELSE 'TRIAGED' END AS computed_status,
       OBJECT_CONSTRUCT(
         'asset_id', f.ASSET_ID, 'model_version', 'AD_v1_ZSCORE_v1',
@@ -82,9 +89,10 @@ BEGIN
   ON tgt.ALERT_ID = src.alert_id AND tgt.STATUS NOT IN ('CLOSED', 'SUPPRESSED')
   WHEN MATCHED THEN UPDATE SET
     SEVERITY = src.severity, CONFIDENCE = src.confidence, FAILURE_PROBABILITY = src.failure_probability,
-    OEE_IMPACT_EST = src.oee_impact_est, EVIDENCE = src.evidence
-  WHEN NOT MATCHED THEN INSERT (ALERT_ID, ASSET_ID, ONSET_TS, SEVERITY, CONFIDENCE, FAILURE_PROBABILITY, PREDICTED_MODE, OEE_IMPACT_EST, STATUS, EVIDENCE)
-  VALUES (src.alert_id, src.ASSET_ID, src.onset_ts, src.severity, src.confidence, src.failure_probability, src.predicted_mode, src.oee_impact_est, src.computed_status, src.evidence);
+    OEE_IMPACT_EST = src.oee_impact_est, EVIDENCE = src.evidence,
+    PREDICTED_FAILURE_TS = LEAST(COALESCE(tgt.PREDICTED_FAILURE_TS, src.predicted_failure_ts), src.predicted_failure_ts)
+  WHEN NOT MATCHED THEN INSERT (ALERT_ID, ASSET_ID, ONSET_TS, SEVERITY, CONFIDENCE, FAILURE_PROBABILITY, PREDICTED_MODE, OEE_IMPACT_EST, STATUS, EVIDENCE, PREDICTED_FAILURE_TS)
+  VALUES (src.alert_id, src.ASSET_ID, src.onset_ts, src.severity, src.confidence, src.failure_probability, src.predicted_mode, src.oee_impact_est, src.computed_status, src.evidence, src.predicted_failure_ts);
 
   RETURN 'SCORE_ALERTS complete: ' || (SELECT COUNT(*) FROM AEGIS_OEE.ACTION.ALERT WHERE STATUS IN ('NEW','TRIAGED'))::STRING || ' open alerts';
 END;
@@ -182,16 +190,23 @@ END;
 $$;
 
 -- =============================================================================
--- 3. CREATE_WORK_ORDER(alert_id, approver, dry_run DEFAULT TRUE)
--- Enforces: alert ACKED; approver not null/empty/AGENT; no dup open WO.
+-- 3. CREATE_WORK_ORDER(alert_id, approver, dry_run DEFAULT TRUE, est_duration_min DEFAULT NULL)
+-- Enforces: alert ACKED; approver not null/empty/AGENT; no dup open WO; duration 15-1440 min.
+-- est_duration_min is the approver's repair-time estimate used for scheduling; when NULL the
+-- historical average (GET_EST_DURATION_MIN) is used.
 -- dry_run=TRUE returns preview only. Non-dry-run writes WO + audit,
 -- reserves parts, links requisitions, fires QUEUE_GITHUB_SYNC + NOTIFY_SLACK.
 -- =============================================================================
 
+ALTER TABLE AEGIS_OEE.ACTION.WORK_ORDER ADD COLUMN IF NOT EXISTS EST_DURATION_MIN NUMBER;
+
+DROP PROCEDURE IF EXISTS ACTION.CREATE_WORK_ORDER(VARCHAR, VARCHAR, BOOLEAN);
+
 CREATE OR REPLACE PROCEDURE ACTION.CREATE_WORK_ORDER(
   P_ALERT_ID VARCHAR,
   P_APPROVER VARCHAR,
-  P_DRY_RUN BOOLEAN DEFAULT TRUE
+  P_DRY_RUN BOOLEAN DEFAULT TRUE,
+  P_EST_DURATION_MIN NUMBER DEFAULT NULL
 )
 RETURNS VARIANT
 LANGUAGE SQL
@@ -215,6 +230,7 @@ DECLARE
   v_dup_count NUMBER;
   v_parts VARIANT;
   v_max_lead_days NUMBER DEFAULT 0;
+  v_est_duration NUMBER;
 BEGIN
   SELECT STATUS, ASSET_ID, SEVERITY, PREDICTED_MODE, CONFIDENCE, FAILURE_PROBABILITY, OEE_IMPACT_EST, EVIDENCE
   INTO :v_alert_status, :v_asset_id, :v_severity, :v_predicted_mode, :v_confidence, :v_failure_prob, :v_oee_impact, :v_evidence
@@ -242,6 +258,14 @@ BEGIN
            CURRENT_TIMESTAMP(), COALESCE(:P_APPROVER, 'UNKNOWN'), 'CREATE_WO_REJECTED',
            :P_ALERT_ID, OBJECT_CONSTRUCT('reason', 'Invalid approver: ' || COALESCE(:P_APPROVER, 'NULL'));
     RETURN OBJECT_CONSTRUCT('status', 'REJECTED', 'reason', 'Approver must be a real person, not NULL/empty/AGENT');
+  END IF;
+
+  IF (:P_EST_DURATION_MIN IS NOT NULL AND (:P_EST_DURATION_MIN < 15 OR :P_EST_DURATION_MIN > 1440)) THEN
+    INSERT INTO AEGIS_OEE.ACTION.ACTION_AUDIT (AUDIT_ID, TS, ACTOR, ACTION, OBJECT_REF, DETAIL)
+    SELECT 'AUD_CWOFAIL_' || TO_VARCHAR(CURRENT_TIMESTAMP(), 'YYYYMMDD_HH24MISSFF3'),
+           CURRENT_TIMESTAMP(), :P_APPROVER, 'CREATE_WO_REJECTED',
+           :P_ALERT_ID, OBJECT_CONSTRUCT('reason', 'Invalid estimated duration', 'est_duration_min', :P_EST_DURATION_MIN);
+    RETURN OBJECT_CONSTRUCT('status', 'REJECTED', 'reason', 'Estimated duration must be between 15 and 1440 minutes');
   END IF;
 
   SELECT COUNT(*) INTO :v_dup_count
@@ -281,6 +305,7 @@ BEGIN
 
   v_wo_id := 'WO_' || REPLACE(:P_ALERT_ID, 'ALT_', '') || '_' || TO_VARCHAR(CURRENT_TIMESTAMP(), 'YYYYMMDD_HH24MISS');
   v_title := '[' || :v_severity || '][' || :v_predicted_mode || '] ' || :v_asset_id || ' — inspection required';
+  v_est_duration := COALESCE(:P_EST_DURATION_MIN, AEGIS_OEE.ACTION.GET_EST_DURATION_MIN(:v_predicted_mode, :v_asset_type));
 
   IF (:P_DRY_RUN) THEN
     INSERT INTO AEGIS_OEE.ACTION.ACTION_AUDIT (AUDIT_ID, TS, ACTOR, ACTION, OBJECT_REF, DETAIL)
@@ -292,16 +317,18 @@ BEGIN
       'asset_id', :v_asset_id, 'priority', :v_severity, 'title', :v_title,
       'predicted_mode', :v_predicted_mode, 'confidence', :v_confidence,
       'failure_probability', :v_failure_prob, 'parts', :v_parts,
-      'max_lead_time_days', :v_max_lead_days, 'approver', :P_APPROVER
+      'max_lead_time_days', :v_max_lead_days, 'approver', :P_APPROVER,
+      'est_duration_min', :v_est_duration,
+      'est_duration_source', IFF(:P_EST_DURATION_MIN IS NULL, 'HISTORICAL_AVERAGE', 'APPROVER')
     );
   END IF;
 
-  INSERT INTO AEGIS_OEE.ACTION.WORK_ORDER (WO_ID, ALERT_ID, ASSET_ID, PRIORITY, STATE, TITLE, DESCRIPTION, EVIDENCE, APPROVED_BY, APPROVED_TS)
+  INSERT INTO AEGIS_OEE.ACTION.WORK_ORDER (WO_ID, ALERT_ID, ASSET_ID, PRIORITY, STATE, TITLE, DESCRIPTION, EVIDENCE, APPROVED_BY, APPROVED_TS, EST_DURATION_MIN)
   SELECT :v_wo_id, :P_ALERT_ID, :v_asset_id, :v_severity, 'APPROVED', :v_title,
          :v_predicted_mode || ' predicted with confidence ' || ROUND(:v_confidence, 3)::STRING
          || '. Failure probability: ' || ROUND(:v_failure_prob, 3)::STRING
          || '. Parts lead time: ' || :v_max_lead_days::STRING || ' days.',
-         :v_evidence, :P_APPROVER, CURRENT_TIMESTAMP();
+         :v_evidence, :P_APPROVER, CURRENT_TIMESTAMP(), :P_EST_DURATION_MIN;
 
   UPDATE AEGIS_OEE.CORE.PARTS_INVENTORY pi
   SET RESERVED_QTY = pi.RESERVED_QTY + LEAST(fmp.QTY_REQUIRED, pi.ON_HAND_QTY - pi.RESERVED_QTY)
@@ -320,7 +347,8 @@ BEGIN
   SELECT 'AUD_APPROVED_' || TO_VARCHAR(CURRENT_TIMESTAMP(), 'YYYYMMDD_HH24MISSFF3'),
          CURRENT_TIMESTAMP(), :P_APPROVER, 'WO_APPROVED', :v_wo_id,
          OBJECT_CONSTRUCT('alert_id', :P_ALERT_ID, 'asset_id', :v_asset_id,
-                          'priority', :v_severity, 'predicted_mode', :v_predicted_mode);
+                          'priority', :v_severity, 'predicted_mode', :v_predicted_mode,
+                          'est_duration_min', :v_est_duration);
 
   CALL AEGIS_OEE.ACTION.QUEUE_GITHUB_SYNC(:v_wo_id);
   CALL AEGIS_OEE.ACTION.NOTIFY_SLACK(OBJECT_CONSTRUCT(
@@ -328,6 +356,9 @@ BEGIN
     'wo_id', :v_wo_id, 'asset_id', :v_asset_id,
     'approver', :P_APPROVER, 'predicted_mode', :v_predicted_mode
   ));
+
+  -- Auto-schedule into the best maintenance window (TENTATIVE or EXPEDITE)
+  CALL AEGIS_OEE.ACTION.AUTO_SCHEDULE_WO(:v_wo_id, :P_APPROVER);
 
   RETURN OBJECT_CONSTRUCT(
     'status', 'APPROVED', 'wo_id', :v_wo_id, 'alert_id', :P_ALERT_ID,
@@ -637,6 +668,27 @@ BEGIN
     UPDATE AEGIS_OEE.CORE.PARTS_INVENTORY
     SET ON_HAND_QTY = ON_HAND_QTY + :v_qty
     WHERE PART_ID = :v_part_id;
+
+    -- Reserve received qty for the linked WO (up to the WO's shortage for that part)
+    IF (:v_wo_id IS NOT NULL) THEN
+      LET v_wo_asset_id VARCHAR := (SELECT ASSET_ID FROM AEGIS_OEE.ACTION.WORK_ORDER WHERE WO_ID = :v_wo_id);
+      LET v_wo_alert_id VARCHAR := (SELECT ALERT_ID FROM AEGIS_OEE.ACTION.WORK_ORDER WHERE WO_ID = :v_wo_id);
+      LET v_wo_mode VARCHAR := (SELECT PREDICTED_MODE FROM AEGIS_OEE.ACTION.ALERT WHERE ALERT_ID = :v_wo_alert_id);
+      LET v_wo_asset_type VARCHAR := (SELECT ASSET_TYPE FROM AEGIS_OEE.CORE.ASSET WHERE ASSET_ID = :v_wo_asset_id);
+      LET v_needed NUMBER := (
+        SELECT COALESCE(fmp.QTY_REQUIRED, 0)
+        FROM AEGIS_OEE.CORE.FAILURE_MODE_PARTS fmp
+        WHERE fmp.FAILURE_MODE = :v_wo_mode AND fmp.ASSET_TYPE = :v_wo_asset_type AND fmp.PART_ID = :v_part_id
+      );
+      LET v_already_reserved NUMBER := (SELECT RESERVED_QTY FROM AEGIS_OEE.CORE.PARTS_INVENTORY WHERE PART_ID = :v_part_id);
+      LET v_on_hand NUMBER := (SELECT ON_HAND_QTY FROM AEGIS_OEE.CORE.PARTS_INVENTORY WHERE PART_ID = :v_part_id);
+      LET v_reserve_amount NUMBER := LEAST(:v_qty, GREATEST(:v_needed - :v_already_reserved, 0), :v_on_hand - :v_already_reserved);
+      IF (:v_reserve_amount > 0) THEN
+        UPDATE AEGIS_OEE.CORE.PARTS_INVENTORY
+        SET RESERVED_QTY = RESERVED_QTY + :v_reserve_amount
+        WHERE PART_ID = :v_part_id;
+      END IF;
+    END IF;
   END IF;
 
   INSERT INTO AEGIS_OEE.ACTION.ACTION_AUDIT (AUDIT_ID, TS, ACTOR, ACTION, OBJECT_REF, DETAIL)
@@ -658,15 +710,246 @@ $$;
 
 
 -- =============================================================================
--- 9. START_WORK_ORDER(wo_id, technician, note, dry_run)
--- APPROVED|SYNCED → IN_PROGRESS. Rejected if required parts not available.
+-- ACQUIRE_REQUISITION_MANUAL — manual acquisition outside the supplier flow
+-- (local purchase, inter-plant transfer, emergency vendor). Closes an open
+-- requisition as RECEIVED from any open status, adds the stock once and reserves
+-- it for the linked work order. Requires a real person; every attempt is audited.
 -- =============================================================================
+
+CREATE OR REPLACE PROCEDURE AEGIS_OEE.ACTION.ACQUIRE_REQUISITION_MANUAL(
+  P_REQ_ID   VARCHAR,
+  P_SOURCE   VARCHAR,
+  P_ACTOR    VARCHAR,
+  P_NOTE     VARCHAR DEFAULT '',
+  P_DRY_RUN  BOOLEAN DEFAULT TRUE
+)
+RETURNS VARIANT
+LANGUAGE SQL
+EXECUTE AS CALLER
+AS
+$$
+DECLARE
+  v_cur_status VARCHAR;
+  v_part_id VARCHAR;
+  v_qty NUMBER;
+  v_wo_id VARCHAR;
+  v_audit_id VARCHAR;
+  v_reason VARCHAR DEFAULT '';
+  v_needed NUMBER DEFAULT 0;
+  v_on_hand NUMBER DEFAULT 0;
+  v_already_reserved NUMBER DEFAULT 0;
+  v_reserve_amount NUMBER DEFAULT 0;
+BEGIN
+  v_audit_id := 'AUD_REQMAN_' || TO_VARCHAR(CURRENT_TIMESTAMP(), 'YYYYMMDD_HH24MISSFF3');
+
+  IF (:P_ACTOR IS NULL OR TRIM(:P_ACTOR) = '' OR UPPER(TRIM(:P_ACTOR)) = 'AGENT') THEN
+    v_reason := 'Invalid actor: ' || COALESCE(:P_ACTOR, 'NULL') || ' — must be a real person';
+    INSERT INTO AEGIS_OEE.ACTION.ACTION_AUDIT (AUDIT_ID, TS, ACTOR, ACTION, OBJECT_REF, DETAIL)
+    SELECT :v_audit_id, CURRENT_TIMESTAMP(), COALESCE(:P_ACTOR, 'UNKNOWN'),
+           'REQ_MANUAL_REJECTED', :P_REQ_ID, OBJECT_CONSTRUCT('reason', :v_reason);
+    RETURN OBJECT_CONSTRUCT('status', 'REJECTED', 'reason', :v_reason);
+  END IF;
+
+  IF (:P_SOURCE IS NULL OR UPPER(TRIM(:P_SOURCE)) NOT IN
+      ('LOCAL_PURCHASE', 'INTER_PLANT_TRANSFER', 'EMERGENCY_VENDOR', 'OTHER')) THEN
+    v_reason := 'Invalid source: ' || COALESCE(:P_SOURCE, 'NULL');
+    INSERT INTO AEGIS_OEE.ACTION.ACTION_AUDIT (AUDIT_ID, TS, ACTOR, ACTION, OBJECT_REF, DETAIL)
+    SELECT :v_audit_id, CURRENT_TIMESTAMP(), :P_ACTOR,
+           'REQ_MANUAL_REJECTED', :P_REQ_ID, OBJECT_CONSTRUCT('reason', :v_reason);
+    RETURN OBJECT_CONSTRUCT('status', 'REJECTED', 'reason', :v_reason);
+  END IF;
+
+  SELECT STATUS, PART_ID, QTY, WO_ID
+  INTO :v_cur_status, :v_part_id, :v_qty, :v_wo_id
+  FROM AEGIS_OEE.ACTION.PURCHASE_REQUISITION
+  WHERE REQ_ID = :P_REQ_ID;
+
+  IF (:v_cur_status IS NULL) THEN
+    v_reason := 'Requisition not found: ' || :P_REQ_ID;
+    INSERT INTO AEGIS_OEE.ACTION.ACTION_AUDIT (AUDIT_ID, TS, ACTOR, ACTION, OBJECT_REF, DETAIL)
+    SELECT :v_audit_id, CURRENT_TIMESTAMP(), :P_ACTOR,
+           'REQ_MANUAL_REJECTED', :P_REQ_ID, OBJECT_CONSTRUCT('reason', :v_reason);
+    RETURN OBJECT_CONSTRUCT('status', 'REJECTED', 'reason', :v_reason);
+  END IF;
+
+  IF (:v_cur_status IN ('RECEIVED', 'CANCELLED')) THEN
+    v_reason := 'Requisition is already ' || :v_cur_status;
+    INSERT INTO AEGIS_OEE.ACTION.ACTION_AUDIT (AUDIT_ID, TS, ACTOR, ACTION, OBJECT_REF, DETAIL)
+    SELECT :v_audit_id, CURRENT_TIMESTAMP(), :P_ACTOR,
+           'REQ_MANUAL_REJECTED', :P_REQ_ID, OBJECT_CONSTRUCT('reason', :v_reason, 'from', :v_cur_status);
+    RETURN OBJECT_CONSTRUCT('status', 'REJECTED', 'reason', :v_reason);
+  END IF;
+
+  IF (:P_DRY_RUN) THEN
+    INSERT INTO AEGIS_OEE.ACTION.ACTION_AUDIT (AUDIT_ID, TS, ACTOR, ACTION, OBJECT_REF, DETAIL)
+    SELECT :v_audit_id, CURRENT_TIMESTAMP(), :P_ACTOR,
+           'REQ_MANUAL_DRYRUN', :P_REQ_ID,
+           OBJECT_CONSTRUCT('from', :v_cur_status, 'to', 'RECEIVED', 'source', UPPER(TRIM(:P_SOURCE)), 'note', :P_NOTE);
+    RETURN OBJECT_CONSTRUCT('status', 'DRY_RUN_PREVIEW', 'req_id', :P_REQ_ID,
+           'from', :v_cur_status, 'to', 'RECEIVED', 'source', UPPER(TRIM(:P_SOURCE)),
+           'part_id', :v_part_id, 'qty', :v_qty);
+  END IF;
+
+  UPDATE AEGIS_OEE.ACTION.PURCHASE_REQUISITION
+  SET STATUS = 'RECEIVED'
+  WHERE REQ_ID = :P_REQ_ID AND STATUS = :v_cur_status;
+
+  UPDATE AEGIS_OEE.CORE.PARTS_INVENTORY
+  SET ON_HAND_QTY = ON_HAND_QTY + :v_qty
+  WHERE PART_ID = :v_part_id;
+
+  -- Reserve for the linked WO, capped by what that WO still needs for this part
+  SELECT COALESCE(MAX(fmp.QTY_REQUIRED), 0) INTO :v_needed
+  FROM AEGIS_OEE.ACTION.WORK_ORDER wo
+  JOIN AEGIS_OEE.ACTION.ALERT al ON wo.ALERT_ID = al.ALERT_ID
+  JOIN AEGIS_OEE.CORE.ASSET a ON wo.ASSET_ID = a.ASSET_ID
+  JOIN AEGIS_OEE.CORE.FAILURE_MODE_PARTS fmp
+    ON fmp.FAILURE_MODE = al.PREDICTED_MODE AND fmp.ASSET_TYPE = a.ASSET_TYPE AND fmp.PART_ID = :v_part_id
+  WHERE wo.WO_ID = :v_wo_id;
+
+  SELECT ON_HAND_QTY, RESERVED_QTY INTO :v_on_hand, :v_already_reserved
+  FROM AEGIS_OEE.CORE.PARTS_INVENTORY WHERE PART_ID = :v_part_id;
+
+  v_reserve_amount := GREATEST(0, LEAST(:v_qty, :v_needed - :v_already_reserved, :v_on_hand - :v_already_reserved));
+  IF (:v_wo_id IS NOT NULL AND :v_reserve_amount > 0) THEN
+    UPDATE AEGIS_OEE.CORE.PARTS_INVENTORY
+    SET RESERVED_QTY = RESERVED_QTY + :v_reserve_amount
+    WHERE PART_ID = :v_part_id;
+  END IF;
+
+  INSERT INTO AEGIS_OEE.ACTION.ACTION_AUDIT (AUDIT_ID, TS, ACTOR, ACTION, OBJECT_REF, DETAIL)
+  SELECT :v_audit_id, CURRENT_TIMESTAMP(), :P_ACTOR,
+         'REQ_MANUAL_ACQUIRED', :P_REQ_ID,
+         OBJECT_CONSTRUCT('from', :v_cur_status, 'to', 'RECEIVED', 'source', UPPER(TRIM(:P_SOURCE)),
+                          'part_id', :v_part_id, 'qty', :v_qty, 'wo_id', :v_wo_id,
+                          'reserved', :v_reserve_amount, 'note', :P_NOTE);
+
+  RETURN OBJECT_CONSTRUCT('status', 'OK', 'req_id', :P_REQ_ID, 'from', :v_cur_status, 'to', 'RECEIVED',
+         'source', UPPER(TRIM(:P_SOURCE)), 'part_id', :v_part_id, 'qty', :v_qty, 'reserved', :v_reserve_amount);
+END;
+$$;
+
+-- =============================================================================
+-- ADD_STOCK_MANUAL — manual stock receipt without a requisition (found stock,
+-- transfer, returned parts). Optionally reserves the added quantity for an open
+-- work order. Requires a real person; every attempt is audited.
+-- =============================================================================
+
+CREATE OR REPLACE PROCEDURE AEGIS_OEE.ACTION.ADD_STOCK_MANUAL(
+  P_PART_ID  VARCHAR,
+  P_QTY      NUMBER,
+  P_SOURCE   VARCHAR,
+  P_ACTOR    VARCHAR,
+  P_NOTE     VARCHAR DEFAULT '',
+  P_WO_ID    VARCHAR DEFAULT NULL,
+  P_DRY_RUN  BOOLEAN DEFAULT TRUE
+)
+RETURNS VARIANT
+LANGUAGE SQL
+EXECUTE AS CALLER
+AS
+$$
+DECLARE
+  v_audit_id VARCHAR;
+  v_reason VARCHAR DEFAULT '';
+  v_part_count NUMBER DEFAULT 0;
+  v_wo_state VARCHAR;
+  v_needed NUMBER DEFAULT 0;
+  v_on_hand NUMBER DEFAULT 0;
+  v_already_reserved NUMBER DEFAULT 0;
+  v_reserve_amount NUMBER DEFAULT 0;
+BEGIN
+  v_audit_id := 'AUD_STOCKADD_' || TO_VARCHAR(CURRENT_TIMESTAMP(), 'YYYYMMDD_HH24MISSFF3');
+
+  IF (:P_ACTOR IS NULL OR TRIM(:P_ACTOR) = '' OR UPPER(TRIM(:P_ACTOR)) = 'AGENT') THEN
+    v_reason := 'Invalid actor: ' || COALESCE(:P_ACTOR, 'NULL') || ' — must be a real person';
+  ELSEIF (:P_SOURCE IS NULL OR UPPER(TRIM(:P_SOURCE)) NOT IN
+          ('LOCAL_PURCHASE', 'INTER_PLANT_TRANSFER', 'EMERGENCY_VENDOR', 'RETURNED_STOCK', 'OTHER')) THEN
+    v_reason := 'Invalid source: ' || COALESCE(:P_SOURCE, 'NULL');
+  ELSEIF (:P_QTY IS NULL OR :P_QTY <= 0 OR :P_QTY != FLOOR(:P_QTY)) THEN
+    v_reason := 'Quantity must be a positive whole number';
+  END IF;
+
+  IF (:v_reason = '') THEN
+    SELECT COUNT(*) INTO :v_part_count FROM AEGIS_OEE.CORE.PARTS_INVENTORY WHERE PART_ID = :P_PART_ID;
+    IF (:v_part_count = 0) THEN
+      v_reason := 'Part not found: ' || COALESCE(:P_PART_ID, 'NULL');
+    END IF;
+  END IF;
+
+  IF (:v_reason = '' AND :P_WO_ID IS NOT NULL) THEN
+    SELECT MAX(STATE) INTO :v_wo_state FROM AEGIS_OEE.ACTION.WORK_ORDER WHERE WO_ID = :P_WO_ID;
+    IF (:v_wo_state IS NULL) THEN
+      v_reason := 'Work order not found: ' || :P_WO_ID;
+    ELSEIF (:v_wo_state IN ('CLOSED', 'REJECTED', 'CANCELLED')) THEN
+      v_reason := 'Work order is ' || :v_wo_state;
+    END IF;
+  END IF;
+
+  IF (:v_reason != '') THEN
+    INSERT INTO AEGIS_OEE.ACTION.ACTION_AUDIT (AUDIT_ID, TS, ACTOR, ACTION, OBJECT_REF, DETAIL)
+    SELECT :v_audit_id, CURRENT_TIMESTAMP(), COALESCE(:P_ACTOR, 'UNKNOWN'),
+           'STOCK_ADD_REJECTED', :P_PART_ID, OBJECT_CONSTRUCT('reason', :v_reason, 'qty', :P_QTY);
+    RETURN OBJECT_CONSTRUCT('status', 'REJECTED', 'reason', :v_reason);
+  END IF;
+
+  IF (:P_DRY_RUN) THEN
+    INSERT INTO AEGIS_OEE.ACTION.ACTION_AUDIT (AUDIT_ID, TS, ACTOR, ACTION, OBJECT_REF, DETAIL)
+    SELECT :v_audit_id, CURRENT_TIMESTAMP(), :P_ACTOR, 'STOCK_ADD_DRYRUN', :P_PART_ID,
+           OBJECT_CONSTRUCT('qty', :P_QTY, 'source', UPPER(TRIM(:P_SOURCE)), 'wo_id', :P_WO_ID, 'note', :P_NOTE);
+    RETURN OBJECT_CONSTRUCT('status', 'DRY_RUN_PREVIEW', 'part_id', :P_PART_ID, 'qty', :P_QTY,
+           'source', UPPER(TRIM(:P_SOURCE)), 'wo_id', :P_WO_ID);
+  END IF;
+
+  UPDATE AEGIS_OEE.CORE.PARTS_INVENTORY
+  SET ON_HAND_QTY = ON_HAND_QTY + :P_QTY
+  WHERE PART_ID = :P_PART_ID;
+
+  IF (:P_WO_ID IS NOT NULL) THEN
+    SELECT COALESCE(MAX(fmp.QTY_REQUIRED), 0) INTO :v_needed
+    FROM AEGIS_OEE.ACTION.WORK_ORDER wo
+    JOIN AEGIS_OEE.ACTION.ALERT al ON wo.ALERT_ID = al.ALERT_ID
+    JOIN AEGIS_OEE.CORE.ASSET a ON wo.ASSET_ID = a.ASSET_ID
+    JOIN AEGIS_OEE.CORE.FAILURE_MODE_PARTS fmp
+      ON fmp.FAILURE_MODE = al.PREDICTED_MODE AND fmp.ASSET_TYPE = a.ASSET_TYPE AND fmp.PART_ID = :P_PART_ID
+    WHERE wo.WO_ID = :P_WO_ID;
+
+    SELECT ON_HAND_QTY, RESERVED_QTY INTO :v_on_hand, :v_already_reserved
+    FROM AEGIS_OEE.CORE.PARTS_INVENTORY WHERE PART_ID = :P_PART_ID;
+
+    v_reserve_amount := GREATEST(0, LEAST(:P_QTY, :v_needed - :v_already_reserved, :v_on_hand - :v_already_reserved));
+    IF (:v_reserve_amount > 0) THEN
+      UPDATE AEGIS_OEE.CORE.PARTS_INVENTORY
+      SET RESERVED_QTY = RESERVED_QTY + :v_reserve_amount
+      WHERE PART_ID = :P_PART_ID;
+    END IF;
+  END IF;
+
+  INSERT INTO AEGIS_OEE.ACTION.ACTION_AUDIT (AUDIT_ID, TS, ACTOR, ACTION, OBJECT_REF, DETAIL)
+  SELECT :v_audit_id, CURRENT_TIMESTAMP(), :P_ACTOR, 'STOCK_ADDED_MANUAL', :P_PART_ID,
+         OBJECT_CONSTRUCT('qty', :P_QTY, 'source', UPPER(TRIM(:P_SOURCE)), 'wo_id', :P_WO_ID,
+                          'reserved', :v_reserve_amount, 'note', :P_NOTE);
+
+  RETURN OBJECT_CONSTRUCT('status', 'OK', 'part_id', :P_PART_ID, 'qty', :P_QTY,
+         'source', UPPER(TRIM(:P_SOURCE)), 'wo_id', :P_WO_ID, 'reserved', :v_reserve_amount);
+END;
+$$;
+
+-- =============================================================================
+-- 9. START_WORK_ORDER(wo_id, technician, note, dry_run, override_reason)
+-- APPROVED|SYNCED → IN_PROGRESS. Rejected if required parts are not available, or if now is
+-- outside the booked maintenance window (15 min early start allowed) unless an emergency
+-- override reason (10+ chars) is given; overrides are audited.
+-- =============================================================================
+
+DROP PROCEDURE IF EXISTS AEGIS_OEE.ACTION.START_WORK_ORDER(VARCHAR, VARCHAR, VARCHAR, BOOLEAN);
 
 CREATE OR REPLACE PROCEDURE AEGIS_OEE.ACTION.START_WORK_ORDER(
   P_WO_ID      VARCHAR,
   P_TECHNICIAN VARCHAR,
   P_NOTE       VARCHAR DEFAULT '',
-  P_DRY_RUN    BOOLEAN DEFAULT TRUE
+  P_DRY_RUN    BOOLEAN DEFAULT TRUE,
+  P_OVERRIDE_REASON VARCHAR DEFAULT NULL
 )
 RETURNS VARIANT
 LANGUAGE SQL
@@ -682,6 +965,10 @@ DECLARE
   v_audit_id VARCHAR;
   v_blockers VARIANT;
   v_blocker_count NUMBER DEFAULT 0;
+  v_sched_start TIMESTAMP_TZ;
+  v_sched_end TIMESTAMP_TZ;
+  v_sched_problem VARCHAR;
+  v_override BOOLEAN DEFAULT FALSE;
 BEGIN
   v_audit_id := 'AUD_START_' || TO_VARCHAR(CURRENT_TIMESTAMP(), 'YYYYMMDD_HH24MISSFF3');
 
@@ -747,14 +1034,47 @@ BEGIN
            'blocking_parts', :v_blockers, 'action', 'Receive outstanding requisitions via Parts Procurement page');
   END IF;
 
+  -- Schedule gate: now must fall inside the booked maintenance window (15 min early start allowed)
+  SELECT SCHEDULED_START_TS, SCHEDULED_END_TS
+  INTO :v_sched_start, :v_sched_end
+  FROM AEGIS_OEE.ACTION.WO_SCHEDULE
+  WHERE WO_ID = :P_WO_ID AND STATUS NOT IN ('CANCELLED', 'COMPLETED')
+  ORDER BY CREATED_TS DESC LIMIT 1;
+
+  v_sched_problem := CASE
+    WHEN :v_sched_start IS NULL THEN 'No maintenance window is booked for this work order'
+    WHEN CURRENT_TIMESTAMP() < DATEADD('minute', -15, :v_sched_start) THEN 'The booked maintenance window has not opened yet'
+    WHEN CURRENT_TIMESTAMP() > :v_sched_end THEN 'The booked maintenance window has already ended'
+    ELSE NULL END;
+
+  IF (:v_sched_problem IS NOT NULL) THEN
+    IF (:P_OVERRIDE_REASON IS NULL OR LENGTH(TRIM(:P_OVERRIDE_REASON)) < 10) THEN
+      INSERT INTO AEGIS_OEE.ACTION.ACTION_AUDIT (AUDIT_ID, TS, ACTOR, ACTION, OBJECT_REF, DETAIL)
+      SELECT :v_audit_id, CURRENT_TIMESTAMP(), :P_TECHNICIAN,
+             'START_WO_REJECTED', :P_WO_ID,
+             OBJECT_CONSTRUCT('reason', :v_sched_problem, 'check', 'SCHEDULE_WINDOW',
+                              'window_start', :v_sched_start, 'window_end', :v_sched_end);
+      RETURN OBJECT_CONSTRUCT('status', 'REJECTED',
+             'reason', IFF(TRIM(COALESCE(:P_OVERRIDE_REASON, '')) <> '',
+                           'Override reason must be at least 10 characters (' || :v_sched_problem || ')', :v_sched_problem),
+             'schedule_violation', TRUE, 'override_allowed', TRUE,
+             'window_start', TO_VARCHAR(:v_sched_start, 'YYYY-MM-DD HH24:MI'),
+             'window_end', TO_VARCHAR(:v_sched_end, 'YYYY-MM-DD HH24:MI'),
+             'action', 'Start inside the booked window, rebook in Shift Plan, or use the emergency override with a reason (10+ characters)');
+    END IF;
+    v_override := TRUE;
+  END IF;
+
   -- Dry-run preview
   IF (:P_DRY_RUN) THEN
     INSERT INTO AEGIS_OEE.ACTION.ACTION_AUDIT (AUDIT_ID, TS, ACTOR, ACTION, OBJECT_REF, DETAIL)
     SELECT :v_audit_id, CURRENT_TIMESTAMP(), :P_TECHNICIAN,
            'START_WO_DRYRUN', :P_WO_ID,
-           OBJECT_CONSTRUCT('from', :v_wo_state, 'to', 'IN_PROGRESS', 'note', :P_NOTE);
+           OBJECT_CONSTRUCT('from', :v_wo_state, 'to', 'IN_PROGRESS', 'note', :P_NOTE,
+                            'schedule_override', :v_override);
     RETURN OBJECT_CONSTRUCT('status', 'DRY_RUN_PREVIEW', 'wo_id', :P_WO_ID,
-           'from', :v_wo_state, 'to', 'IN_PROGRESS', 'technician', :P_TECHNICIAN, 'parts_ready', TRUE);
+           'from', :v_wo_state, 'to', 'IN_PROGRESS', 'technician', :P_TECHNICIAN, 'parts_ready', TRUE,
+           'schedule_check', IFF(:v_override, 'OVERRIDE: ' || :v_sched_problem, 'WITHIN_WINDOW'));
   END IF;
 
   -- Execute: transition WO to IN_PROGRESS
@@ -774,8 +1094,17 @@ BEGIN
          OBJECT_CONSTRUCT('from', :v_wo_state, 'to', 'IN_PROGRESS',
                           'note', :P_NOTE, 'technician', :P_TECHNICIAN);
 
+  IF (:v_override) THEN
+    INSERT INTO AEGIS_OEE.ACTION.ACTION_AUDIT (AUDIT_ID, TS, ACTOR, ACTION, OBJECT_REF, DETAIL)
+    SELECT :v_audit_id || '_OVR', CURRENT_TIMESTAMP(), :P_TECHNICIAN,
+           'START_WO_SCHEDULE_OVERRIDE', :P_WO_ID,
+           OBJECT_CONSTRUCT('violation', :v_sched_problem, 'override_reason', TRIM(:P_OVERRIDE_REASON),
+                            'window_start', :v_sched_start, 'window_end', :v_sched_end);
+  END IF;
+
   RETURN OBJECT_CONSTRUCT('status', 'OK', 'wo_id', :P_WO_ID,
-         'from', :v_wo_state, 'to', 'IN_PROGRESS', 'technician', :P_TECHNICIAN);
+         'from', :v_wo_state, 'to', 'IN_PROGRESS', 'technician', :P_TECHNICIAN,
+         'schedule_check', IFF(:v_override, 'OVERRIDDEN: ' || :v_sched_problem, 'WITHIN_WINDOW'));
 END;
 $$;
 

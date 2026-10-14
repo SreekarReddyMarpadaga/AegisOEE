@@ -1,9 +1,12 @@
+import json
+from datetime import date, timedelta
 import streamlit as st
 import pandas as pd
 import altair as alt
 from utils import (
     apply_theme, render_header, render_sidebar, render_kpi_card,
     run_query, risk_badge, time_ago, info_tooltip,
+    HEALTH_HELP, FAILURE_PROB_HELP, RISK_HELP, PREDICTED_MODE_HELP,
 )
 
 apply_theme()
@@ -61,36 +64,58 @@ if not health_df.empty:
     pred_mode = hr["PREDICTED_MODE"] if hr["PREDICTED_MODE"] else "None"
     rl = hr["RISK_LEVEL"] if hr["RISK_LEVEL"] else "LOW"
     with h1:
-        render_kpi_card("Health Score", hs, fmt="score")
+        render_kpi_card("Health Score", hs, fmt="score", help=HEALTH_HELP)
     with h2:
-        render_kpi_card("Failure Prob (24h)", fp, fmt="pct")
+        render_kpi_card("Failure Prob (24h)", fp, fmt="pct", help=FAILURE_PROB_HELP)
     with h3:
-        st.markdown(f'**Risk Level:** {risk_badge(rl)}', unsafe_allow_html=True)
-        st.markdown(f"**Predicted Mode:** {pred_mode}")
+        st.markdown(f'**Risk Level:** {risk_badge(rl)} {info_tooltip(RISK_HELP)}', unsafe_allow_html=True)
+        st.markdown(f"**Predicted Mode:** {pred_mode} {info_tooltip(PREDICTED_MODE_HELP)}", unsafe_allow_html=True)
     with h4:
         st.markdown(f"**Line:** {asset_info['LINE_ID']}")
         st.markdown(f"**Type:** {asset_info['ASSET_TYPE']}")
-        st.markdown(f"**Criticality:** {int(asset_info['CRITICALITY'])}/5")
+        st.markdown(f"**Criticality:** {int(asset_info['CRITICALITY'])}/5 {info_tooltip('Business criticality of the asset (1 low to 5 high). Feeds 10% of failure probability and scales alert priority.')}", unsafe_allow_html=True)
 else:
     with h1:
-        render_kpi_card("Health Score", 100, fmt="score")
+        render_kpi_card("Health Score", 100, fmt="score", help=HEALTH_HELP)
     with h2:
-        render_kpi_card("Failure Prob (24h)", 0, fmt="pct")
+        render_kpi_card("Failure Prob (24h)", 0, fmt="pct", help=FAILURE_PROB_HELP)
     with h3:
-        st.markdown(f'**Risk Level:** {risk_badge("LOW")}', unsafe_allow_html=True)
+        st.markdown(f'**Risk Level:** {risk_badge("LOW")} {info_tooltip(RISK_HELP)}', unsafe_allow_html=True)
     with h4:
         st.markdown(f"**Line:** {asset_info['LINE_ID']}")
 
 st.divider()
 
-# Sensor trends (last 24h)
-st.markdown("### Sensor Trends (Last 24h)")
+# Sensor trends (selectable range)
+RANGE_HOURS = {"Last 24 hours": 24, "Last 3 days": 72, "Last 7 days": 168, "Last 30 days": 720}
+rc1, rc2, rc3 = st.columns([2, 2, 2])
+with rc1:
+    range_choice = st.selectbox("Time range", list(RANGE_HOURS) + ["Custom"], key="twin_range")
+if range_choice == "Custom":
+    today = date.today()
+    with rc2:
+        d_from = st.date_input("From", today - timedelta(days=7), key="twin_from")
+    with rc3:
+        d_to = st.date_input("To", today, key="twin_to")
+    if d_from > d_to:
+        st.warning("'From' is after 'To' - the dates were swapped.")
+        d_from, d_to = d_to, d_from
+    ts_from = f"'{d_from} 00:00:00'"
+    ts_to = f"'{d_to} 23:59:59'"
+    range_label = f"{d_from} to {d_to}"
+else:
+    ts_from = f"DATEADD('hour', -{RANGE_HOURS[range_choice]}, CURRENT_TIMESTAMP)"
+    ts_to = "DATEADD('day', 30, CURRENT_TIMESTAMP)"
+    range_label = range_choice.lower()
+
+st.markdown(f"### Sensor Trends ({range_choice if range_choice != 'Custom' else range_label}) {info_tooltip('Vibration, temperature and RPM from RAW.SENSOR_TELEMETRY aggregated into 15-minute windows, with anomalies and the model forecast overlaid. Pick a preset or a custom date range; long ranges show more points and load slower.')}", unsafe_allow_html=True)
 sensor_df = run_query(f"""
     SELECT WINDOW_TS, VIB_RMS_MEAN, TEMP_C_MEAN, RPM_MEAN,
            VIB_RMS_ZSCORE, TEMP_C_ZSCORE, RPM_ZSCORE
     FROM AEGIS_OEE.FEATURES.DT_SENSOR_FEATURES_15MIN
     WHERE ASSET_ID = '{selected_asset}'
-      AND WINDOW_TS >= DATEADD('hour', -24, CURRENT_TIMESTAMP)
+      AND WINDOW_TS >= {ts_from}
+      AND WINDOW_TS <= {ts_to}
     ORDER BY WINDOW_TS
 """, ttl=60)
 
@@ -100,7 +125,8 @@ anomaly_df = run_query(f"""
     FROM AEGIS_OEE.ML.ANOMALY_EVENTS
     WHERE ASSET_ID = '{selected_asset}'
       AND IS_ANOMALY = TRUE
-      AND TS >= DATEADD('hour', -24, CURRENT_TIMESTAMP)
+      AND TS >= {ts_from}
+      AND TS <= {ts_to}
     ORDER BY TS
 """, ttl=60)
 
@@ -109,7 +135,8 @@ forecast_df = run_query(f"""
     SELECT TS, SERIES_TYPE, FORECAST, LOWER_BOUND, UPPER_BOUND
     FROM AEGIS_OEE.ML.SIGNAL_FORECASTS
     WHERE SERIES_ID = '{selected_asset}'
-      AND TS >= DATEADD('hour', -24, CURRENT_TIMESTAMP)
+      AND TS >= {ts_from}
+      AND TS <= {ts_to}
     ORDER BY TS
 """, ttl=60)
 
@@ -227,7 +254,7 @@ if not sensor_df.empty:
     )
     st.altair_chart(rpm_line.properties(height=280), use_container_width=True)
 else:
-    st.info("No sensor data available for the last 24 hours.")
+    st.info(f"No sensor data available for {range_label}.")
 
 st.divider()
 
@@ -241,6 +268,22 @@ maint_df = run_query(f"""
     LIMIT 10
 """)
 if not maint_df.empty:
+    part_names = run_query("SELECT PART_ID, PART_NAME FROM AEGIS_OEE.CORE.PARTS_INVENTORY")
+    name_of = dict(zip(part_names["PART_ID"], part_names["PART_NAME"])) if not part_names.empty else {}
+
+    def _fmt_parts(raw):
+        # PARTS_USED is either a JSON list of {part_id, qty} or legacy free text.
+        try:
+            items = json.loads(raw)
+            if isinstance(items, list):
+                return ", ".join(
+                    f"{name_of.get(i['part_id'], i['part_id'])} x{i.get('qty', 1)}" for i in items
+                )
+        except (TypeError, ValueError, KeyError, AttributeError):
+            pass
+        return raw
+
+    maint_df["PARTS_USED"] = maint_df["PARTS_USED"].apply(_fmt_parts)
     st.dataframe(maint_df, use_container_width=True)
 else:
     st.info("No maintenance history for this asset.")

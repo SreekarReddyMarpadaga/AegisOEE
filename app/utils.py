@@ -142,6 +142,41 @@ AEGIS_CSS = """
         z-index: 1001;
     }
 
+    /* Busy overlay: Streamlit renders the status widget only while a script run is in progress */
+    .stApp:has([data-testid="stStatusWidget"])::after {
+        content: "Working\\2026";
+        position: fixed;
+        inset: 0;
+        z-index: 100000;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding-top: 5.5rem;
+        color: #ccd6f6;
+        font-size: 1rem;
+        background: rgba(14, 17, 23, 0.55);
+        cursor: wait;
+        opacity: 0;
+        animation: aegis-busy-in 0.2s ease 0.35s forwards;
+    }
+    .stApp:has([data-testid="stStatusWidget"])::before {
+        content: "";
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        width: 44px;
+        height: 44px;
+        margin: -30px 0 0 -22px;
+        z-index: 100001;
+        border: 4px solid #2a2a4a;
+        border-top-color: #f0a500;
+        border-radius: 50%;
+        opacity: 0;
+        animation: aegis-busy-in 0.2s ease 0.35s forwards, aegis-spin 0.8s linear infinite;
+    }
+    @keyframes aegis-busy-in { to { opacity: 1; } }
+    @keyframes aegis-spin { to { transform: rotate(360deg); } }
+
     /* Nav cards — CSS grid forces equal row height automatically */
     .nav-grid {
         display: grid;
@@ -194,15 +229,104 @@ def apply_theme():
     st.markdown(AEGIS_CSS, unsafe_allow_html=True)
 
 
+def flash(message):
+    """Queue a success message that survives the rerun and shows under the page header."""
+    st.session_state["_flash"] = message
+
+
+FAILURE_ETA_HELP = (
+    "Estimated latest failure time, fixed when the alert is raised and only ever moved earlier. "
+    "It is derived from the failure probability (80% or more: within 24 h, 50% or more: 72 h, otherwise 7 days); "
+    "it is a planning deadline, not a remaining-useful-life model."
+)
+
+FAILURE_PROB_HELP = (
+    "Probability of failure within 24 h, capped at 100%. Weighted blend of: worst anomaly distance /10 (40%), "
+    "vibration z-score /5 (30%), anomaly count in the last 6 h /50 (20%) and asset criticality /5 (10%). "
+    "Source: FEATURES.DT_ASSET_HEALTH."
+)
+HEALTH_HELP = (
+    "0-100 score. Starts at 100 and loses points for vibration against the asset alert/danger limits, temperature, "
+    "vibration z-score, 7-day unplanned downtime and RPM variance, plus a penalty for recent anomalies. "
+    "Source: FEATURES.DT_ASSET_HEALTH."
+)
+RISK_HELP = "Derived from health score: 30 or below = CRITICAL, 50 or below = HIGH, 70 or below = MEDIUM, otherwise LOW."
+PREDICTED_MODE_HELP = (
+    "Failure mode inferred from the signal with the largest anomaly distance: vibration = BEARING_WEAR, "
+    "temperature = COOLING_RESTRICTION, RPM = RPM_INSTABILITY."
+)
+CONFIDENCE_HELP = (
+    "How much to trust the alert: model confidence (anomaly distance /10) x data quality x evidence agreement x persistence. "
+    "The last two are the share of anomalous windows in the last 6 h, so a single-signal fault such as bearing wear scores low by design."
+)
+SEVERITY_HELP = (
+    "From priority = failure probability x criticality/5 x imminence x OEE impact. "
+    "P1 is 0.5 or more, P2 is 0.25 or more, otherwise P3. Alerts under 50% confidence start as NEW, the rest as TRIAGED."
+)
+OEE_IMPACT_HELP = (
+    "Estimated OEE (availability) loss if the failure happens: 30% when health is 30 or below, 20% up to 50, 10% up to 70, otherwise 5%."
+)
+ALERT_STATUS_HELP = (
+    "NEW / TRIAGED: open. ACKED: accepted, ready for a work order. CLOSED: resolved. SUPPRESSED: dismissed with a reason. "
+    "After a work order closes, the same asset and failure mode is not re-alerted for 24 h."
+)
+OEE_HELP = "Overall Equipment Effectiveness = Availability x Performance x Quality."
+AVAILABILITY_HELP = "Share of planned production time the asset was running (excludes unplanned and planned downtime)."
+PERFORMANCE_HELP = "Actual cycle speed versus ideal cycle time while running."
+QUALITY_HELP = "Good units divided by total units produced."
+
+
+def format_failure_eta(ts):
+    """Return 'YYYY-MM-DD HH:MM (in N h)' for a predicted failure timestamp."""
+    if ts is None or pd.isna(ts):
+        return "not estimated"
+    t = pd.Timestamp(ts)
+    now = pd.Timestamp.now(tz=t.tz) if t.tzinfo else pd.Timestamp.now()
+    hours = (t - now).total_seconds() / 3600
+    when = t.strftime("%Y-%m-%d %H:%M")
+    if hours <= 0:
+        return f"{when} (overdue)"
+    return f"{when} (in {hours:.0f} h)" if hours < 72 else f"{when} (in {hours / 24:.1f} days)"
+
+
+def refresh_page():
+    """Drop cached query results and rerun, so the page shows the latest data."""
+    st.cache_data.clear()
+    st.session_state.pop("_open_item", None)
+    # The warehouse runtime ships an older Streamlit that only has experimental_rerun.
+    rerun = getattr(st, "rerun", None) or getattr(st, "experimental_rerun")
+    rerun()
+
+
+def tab_switch(names, key):
+    """Tab selector whose choice survives reruns (st.tabs resets to the first tab on every form submit)."""
+    return st.radio("View", names, horizontal=True, key=key, label_visibility="collapsed")
+
+
+def remember_open(item_id):
+    """on_click callback: keep this expander open across the rerun triggered by a dry-run preview."""
+    st.session_state["_open_item"] = item_id
+
+
+def is_open(item_id):
+    return st.session_state.get("_open_item") == item_id
+
+
 def render_header(title, subtitle=None):
     sub = f"<p>{subtitle}</p>" if subtitle else ""
     st.markdown(
         f'<div class="aegis-header"><h1>{title}</h1>{sub}</div>',
         unsafe_allow_html=True,
     )
+    _, reload_col = st.columns([6, 1])
+    if reload_col.button("\u21bb Reload data", key=f"reload_{title}"):
+        refresh_page()
+    message = st.session_state.pop("_flash", None)
+    if message:
+        st.success(message)
 
 
-def render_kpi_card(label, value, delta=None, fmt="pct"):
+def render_kpi_card(label, value, delta=None, fmt="pct", help=None):
     if fmt == "pct":
         display_val = f"{value * 100:.1f}%"
     elif fmt == "int":
@@ -236,7 +360,7 @@ def render_kpi_card(label, value, delta=None, fmt="pct"):
     st.markdown(
         f"""
     <div class="kpi-card">
-        <div class="kpi-label">{label}</div>
+        <div class="kpi-label">{label} {info_tooltip(help) if help else ""}</div>
         <div class="kpi-value {color_class}">{display_val}</div>
         {delta_html}
     </div>

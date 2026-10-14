@@ -1,6 +1,9 @@
 import streamlit as st
 import pandas as pd
-from utils import apply_theme, render_header, render_sidebar, run_query, info_tooltip, risk_badge
+from utils import (
+    apply_theme, render_header, render_sidebar, run_query, info_tooltip, risk_badge,
+    HEALTH_HELP, RISK_HELP,
+)
 
 apply_theme()
 render_sidebar()
@@ -33,7 +36,7 @@ if asset_df.empty:
     st.stop()
 
 # Plant hierarchy as HTML bar chart
-st.markdown(f"### Plant Hierarchy {info_tooltip('ISA-95 hierarchy: Site > Line > Asset. Tile color = health score (green=healthy, amber=warning, red=critical). Health is real-time (latest from DT_ASSET_HEALTH). OEE is 7-day rolling average. Source: CORE.ASSET, FEATURES.DT_ASSET_HEALTH, SEMANTIC.DT_SHIFT_OEE.')}", unsafe_allow_html=True)
+st.markdown(f"### Plant Hierarchy {info_tooltip('ISA-95 hierarchy: Site > Line > Asset. Tile color = health score (green=healthy, amber=warning, red=critical). Health is real-time (latest from DT_ASSET_HEALTH). OEE is 7-day rolling average. ' + HEALTH_HELP + ' Source: CORE.ASSET, FEATURES.DT_ASSET_HEALTH, SEMANTIC.DT_SHIFT_OEE.')}", unsafe_allow_html=True)
 st.caption("Health: real-time · OEE: 7-day average")
 
 tree_df = asset_df.copy()
@@ -92,7 +95,7 @@ st.markdown(html, unsafe_allow_html=True)
 st.divider()
 
 # Asset grid grouped by line
-st.markdown(f"### Asset Grid {info_tooltip('One card per asset grouped by production line. Color indicates risk level. Shows 7-day average OEE, health score, and open alert count. Source: CORE.ASSET, FEATURES.DT_ASSET_HEALTH, SEMANTIC.DT_SHIFT_OEE.')}", unsafe_allow_html=True)
+st.markdown(f"### Asset Grid {info_tooltip('One card per asset grouped by production line. Color indicates risk level. ' + RISK_HELP + ' Shows 7-day average OEE, health score, and open alert count. Source: CORE.ASSET, FEATURES.DT_ASSET_HEALTH, SEMANTIC.DT_SHIFT_OEE.')}", unsafe_allow_html=True)
 
 for line_id in sorted(asset_df["LINE_ID"].unique()):
     st.markdown(f"**{line_id}**")
@@ -125,7 +128,7 @@ for line_id in sorted(asset_df["LINE_ID"].unique()):
 st.divider()
 
 # Asset selector to navigate to Digital Twin
-st.markdown("### Investigate Asset")
+st.markdown(f"### Investigate Asset {info_tooltip('Pick an asset and open its Digital Twin for sensor trends, anomalies, forecasts and maintenance history.')}", unsafe_allow_html=True)
 selected = st.selectbox("Select an asset to view its Digital Twin", asset_df["ASSET_ID"].tolist())
 if st.button("Go to Digital Twin"):
     st.session_state["twin_asset"] = selected

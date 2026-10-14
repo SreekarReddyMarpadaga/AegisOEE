@@ -82,6 +82,77 @@ $$
 $$;
 
 -- =============================================================================
+-- 2a. EXTEND_CMMS_HORIZON() — keeps a rolling 14-day plan ahead of today
+-- Adds missing shift-plan rows and maintenance windows with the same shapes as
+-- data_gen/cmms_plan.py, plus one 11-hour SHUTDOWN per line if none is ahead.
+-- Idempotent: never touches or duplicates existing rows. Called by
+-- REFRESH_CMMS_PLAN, AUTO_SCHEDULE_WO and the Shift Plan page.
+-- =============================================================================
+
+CREATE OR REPLACE PROCEDURE AEGIS_OEE.CORE.EXTEND_CMMS_HORIZON()
+RETURNS STRING
+LANGUAGE SQL
+EXECUTE AS CALLER
+AS
+$$
+BEGIN
+  INSERT INTO AEGIS_OEE.CORE.SHIFT_PLAN
+    (PLAN_ID, PLAN_DATE, SHIFT_CODE, LINE_ID, ORDER_ID, PLANNED_QTY,
+     PLANNED_START_TS, PLANNED_END_TS, PLANNED_RUN_MIN, STATUS)
+  SELECT 'SPR_' || TO_VARCHAR(d.D, 'YYYYMMDD') || '_' || l.LINE_ID || '_' || s.SHIFT_CODE,
+         d.D, s.SHIFT_CODE, l.LINE_ID,
+         'ORD_' || TO_VARCHAR(d.D, 'YYYYMMDD') || '_' || RIGHT(l.LINE_ID, 1) || s.SHIFT_CODE,
+         80 + UNIFORM(0, 79, RANDOM()),
+         TO_TIMESTAMP_TZ(TO_VARCHAR(d.D) || IFF(s.SHIFT_CODE = 'A', ' 06:00:00 +05:30', ' 14:00:00 +05:30'), 'YYYY-MM-DD HH24:MI:SS TZH:TZM'),
+         TO_TIMESTAMP_TZ(TO_VARCHAR(d.D) || IFF(s.SHIFT_CODE = 'A', ' 14:00:00 +05:30', ' 22:00:00 +05:30'), 'YYYY-MM-DD HH24:MI:SS TZH:TZM'),
+         IFF(s.SHIFT_CODE = 'A', 450, 480), 'PLANNED'
+  FROM (SELECT DATEADD('day', SEQ4(), CURRENT_DATE()) AS D FROM TABLE(GENERATOR(ROWCOUNT => 14))) d
+  CROSS JOIN (SELECT DISTINCT LINE_ID FROM AEGIS_OEE.CORE.ASSET) l
+  CROSS JOIN (SELECT 'A' AS SHIFT_CODE UNION ALL SELECT 'B') s
+  WHERE NOT EXISTS (
+    SELECT 1 FROM AEGIS_OEE.CORE.SHIFT_PLAN sp
+    WHERE sp.PLAN_DATE = d.D AND sp.LINE_ID = l.LINE_ID AND sp.SHIFT_CODE = s.SHIFT_CODE
+  );
+
+  INSERT INTO AEGIS_OEE.CORE.MAINTENANCE_WINDOW
+    (WINDOW_ID, LINE_ID, ASSET_ID, WINDOW_START_TS, WINDOW_END_TS, WINDOW_TYPE, CAPACITY_MIN, BOOKED_MIN, STATUS)
+  WITH days AS (
+    SELECT DATEADD('day', SEQ4(), CURRENT_DATE()) AS D, SEQ4() AS N FROM TABLE(GENERATOR(ROWCOUNT => 14))
+  ),
+  lines AS (SELECT DISTINCT LINE_ID FROM AEGIS_OEE.CORE.ASSET),
+  cand AS (
+    SELECT l.LINE_ID, 'DAILY_PM' AS WTYPE, d.D, ' 05:30:00 +05:30' AS ST, 30 AS MINS FROM days d CROSS JOIN lines l
+    UNION ALL
+    SELECT l.LINE_ID, 'CHANGEOVER', d.D, ' 22:00:00 +05:30', 30 FROM days d CROSS JOIN lines l
+    UNION ALL
+    SELECT l.LINE_ID, 'NON_PRODUCTION', d.D, ' 22:00:00 +05:30', 240 FROM days d CROSS JOIN lines l
+    WHERE DAYNAME(d.D) = 'Sun'
+    UNION ALL
+    -- Offsets keep the shutdown reachable by an expedited-parts schedule (lead 7d -> ready day +5)
+    SELECT l.LINE_ID, 'SHUTDOWN', d.D, ' 22:00:00 +05:30', 660 FROM days d CROSS JOIN lines l
+    WHERE d.N = IFF(l.LINE_ID = 'LINE_1', 6, 8)
+      AND NOT EXISTS (
+        SELECT 1 FROM AEGIS_OEE.CORE.MAINTENANCE_WINDOW m
+        WHERE m.LINE_ID = l.LINE_ID AND m.WINDOW_TYPE = 'SHUTDOWN' AND m.WINDOW_START_TS >= CURRENT_DATE()
+      )
+  ),
+  timed AS (
+    SELECT c.*, TO_TIMESTAMP_TZ(TO_VARCHAR(c.D) || c.ST, 'YYYY-MM-DD HH24:MI:SS TZH:TZM') AS S FROM cand c
+  )
+  SELECT 'MW_R_' || t.LINE_ID || '_' || t.WTYPE || '_' || TO_VARCHAR(t.D, 'YYYYMMDD'),
+         t.LINE_ID, NULL, t.S, DATEADD('minute', t.MINS, t.S), t.WTYPE, t.MINS, 0, 'OPEN'
+  FROM timed t
+  WHERE DATEADD('minute', t.MINS, t.S) > CURRENT_TIMESTAMP()
+    AND NOT EXISTS (
+      SELECT 1 FROM AEGIS_OEE.CORE.MAINTENANCE_WINDOW m
+      WHERE m.LINE_ID = t.LINE_ID AND m.WINDOW_TYPE = t.WTYPE AND m.WINDOW_START_TS = t.S
+    );
+
+  RETURN 'CMMS horizon extended to ' || DATEADD('day', 13, CURRENT_DATE())::STRING;
+END;
+$$;
+
+-- =============================================================================
 -- 2. REFRESH_CMMS_PLAN() — idempotent rolling-horizon refresh
 -- Never moves or deletes a BOOKED window.
 -- =============================================================================
@@ -117,6 +188,8 @@ BEGIN
   );
 
   DELETE FROM AEGIS_OEE.ACTION.WO_SCHEDULE WHERE STATUS = 'CANCELLED';
+
+  CALL AEGIS_OEE.CORE.EXTEND_CMMS_HORIZON();
 
   RETURN 'CMMS plan refreshed at ' || CURRENT_TIMESTAMP()::STRING;
 END;
@@ -168,8 +241,10 @@ BEGIN
   SELECT al.PREDICTED_MODE INTO :v_failure_mode
   FROM AEGIS_OEE.ACTION.ALERT al WHERE al.ALERT_ID = :v_alert_id;
 
-  -- 4. Estimate duration via single-source UDF
-  v_est_duration_min := AEGIS_OEE.ACTION.GET_EST_DURATION_MIN(:v_failure_mode, :v_asset_type);
+  -- 4. Estimate duration: approver's value from approval, else historical average
+  SELECT COALESCE(MAX(wo.EST_DURATION_MIN), AEGIS_OEE.ACTION.GET_EST_DURATION_MIN(:v_failure_mode, :v_asset_type))
+  INTO :v_est_duration_min
+  FROM AEGIS_OEE.ACTION.WORK_ORDER wo WHERE wo.WO_ID = :P_WO_ID;
   IF (:v_est_duration_min IS NULL OR :v_est_duration_min = 0) THEN
     v_est_duration_min := 120;
   END IF;
@@ -185,7 +260,11 @@ BEGIN
     v_parts_ready_date := CURRENT_DATE();
   END IF;
 
-  -- 6. Get predicted failure time from DT_ASSET_HEALTH or alert evidence
+  -- 6. Predicted failure time: stored on the alert when it was raised, else derived from asset health
+  SELECT al.PREDICTED_FAILURE_TS INTO :v_predicted_failure_ts
+  FROM AEGIS_OEE.ACTION.ALERT al WHERE al.ALERT_ID = :v_alert_id;
+
+  IF (:v_predicted_failure_ts IS NULL) THEN
   BEGIN
     SELECT DATEADD('hour',
       CASE WHEN h.FAILURE_PROBABILITY_24H >= 0.8 THEN 24
@@ -198,9 +277,10 @@ BEGIN
     WHEN OTHER THEN
       v_predicted_failure_ts := DATEADD('day', 7, CURRENT_TIMESTAMP());
   END;
+  END IF;
 
   -- 7. Find qualifying windows: open capacity >= est_duration, on the right line, after parts_ready_date
-  SELECT ARRAY_AGG(obj) WITHIN GROUP (ORDER BY production_loss, window_start_ts, wasted_min)
+  SELECT ARRAY_AGG(obj) WITHIN GROUP (ORDER BY after_failure, production_loss, window_start_ts, wasted_min)
   INTO :v_options
   FROM (
     SELECT OBJECT_CONSTRUCT(
@@ -213,8 +293,10 @@ BEGIN
       'booked_min', mw.BOOKED_MIN,
       'available_min', mw.CAPACITY_MIN - mw.BOOKED_MIN,
       'wasted_min', (mw.CAPACITY_MIN - mw.BOOKED_MIN) - :v_est_duration_min,
-      'production_loss', CASE WHEN mw.WINDOW_TYPE IN ('NON_PRODUCTION','SHUTDOWN','CHANGEOVER','DAILY_PM') THEN 0 ELSE 1 END
+      'production_loss', CASE WHEN mw.WINDOW_TYPE IN ('NON_PRODUCTION','SHUTDOWN','CHANGEOVER','DAILY_PM') THEN 0 ELSE 1 END,
+      'before_predicted_failure', (mw.WINDOW_START_TS <= :v_predicted_failure_ts)
     ) AS obj,
+    CASE WHEN mw.WINDOW_START_TS > :v_predicted_failure_ts THEN 1 ELSE 0 END AS after_failure,
     CASE WHEN mw.WINDOW_TYPE IN ('NON_PRODUCTION','SHUTDOWN','CHANGEOVER','DAILY_PM') THEN 0 ELSE 1 END AS production_loss,
     mw.WINDOW_START_TS AS window_start_ts,
     (mw.CAPACITY_MIN - mw.BOOKED_MIN) - :v_est_duration_min AS wasted_min
@@ -393,8 +475,10 @@ BEGIN
   SELECT al.PREDICTED_MODE INTO :v_failure_mode
   FROM AEGIS_OEE.ACTION.ALERT al WHERE al.ALERT_ID = :v_alert_id;
 
-  -- Estimate duration via single-source UDF
-  v_est_duration_min := AEGIS_OEE.ACTION.GET_EST_DURATION_MIN(:v_failure_mode, :v_asset_type);
+  -- Estimate duration: approver's value from approval, else historical average
+  SELECT COALESCE(MAX(wo.EST_DURATION_MIN), AEGIS_OEE.ACTION.GET_EST_DURATION_MIN(:v_failure_mode, :v_asset_type))
+  INTO :v_est_duration_min
+  FROM AEGIS_OEE.ACTION.WORK_ORDER wo WHERE wo.WO_ID = :P_WO_ID;
   IF (:v_est_duration_min IS NULL OR :v_est_duration_min = 0) THEN
     v_est_duration_min := 120;
   END IF;
@@ -514,6 +598,9 @@ DECLARE
   v_status VARCHAR;
   v_rationale VARCHAR;
 BEGIN
+  -- Make sure the rolling plan still reaches far enough ahead
+  CALL AEGIS_OEE.CORE.EXTEND_CMMS_HORIZON();
+
   -- Get scheduling proposal
   CALL AEGIS_OEE.ACTION.PROPOSE_SCHEDULE(:P_WO_ID);
   v_proposal := (SELECT * FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())));

@@ -1,5 +1,8 @@
 import streamlit as st
-from utils import apply_theme, render_header, render_kpi_card, render_sidebar, run_query, info_tooltip
+from utils import (
+    apply_theme, render_header, render_kpi_card, render_sidebar, run_query, info_tooltip,
+    OEE_HELP, AVAILABILITY_HELP,
+)
 
 st.set_page_config(
     page_title="Home",
@@ -39,16 +42,16 @@ with st.spinner("Loading plant overview..."):
         c1, c2, c3, c4 = st.columns(4)
         with c1:
             val = float(oee_df["AVG_OEE"].iloc[0]) if not oee_df.empty else 0
-            render_kpi_card("Plant OEE (Latest Day)", val, fmt="pct")
+            render_kpi_card("Plant OEE (Latest Day)", val, fmt="pct", help="Average OEE across all lines on the most recent shift date. " + OEE_HELP)
         with c2:
             val = int(alert_df["CNT"].iloc[0]) if not alert_df.empty else 0
-            render_kpi_card("Active Alerts", val, fmt="int")
+            render_kpi_card("Active Alerts", val, fmt="int", help="Alerts not yet CLOSED or SUPPRESSED. Source: ACTION.ALERT.")
         with c3:
             val = int(wo_df["CNT"].iloc[0]) if not wo_df.empty else 0
-            render_kpi_card("Open Work Orders", val, fmt="int")
+            render_kpi_card("Open Work Orders", val, fmt="int", help="Work orders not yet CLOSED or REJECTED (approved, in progress or resolved). Source: ACTION.WORK_ORDER.")
         with c4:
             a_val = float(oee_df["AVG_A"].iloc[0]) if not oee_df.empty else 0
-            render_kpi_card("Availability", a_val, fmt="pct")
+            render_kpi_card("Availability", a_val, fmt="pct", help=AVAILABILITY_HELP)
     except Exception as e:
         st.error(f"Error loading KPIs: {e}")
 
